@@ -1,0 +1,26 @@
+[Unit]
+Description=YouPI-PG Dynamic UPI Payment Gateway (FCFS Queue Engine)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/youpi-pg
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=USE_SQLITE_FALLBACK=true
+Environment=SQLITE_DB_PATH=./data/youpi_pg.sqlite
+Environment=PAYMENT_API_PORT=6100
+Environment=CHECKOUT_PORTAL_PORT=7000
+Environment=MERCHANT_ADMIN_PORT=6001
+Environment=CONTROL_CENTER_PORT=8090
+
+# Output logs to systemd journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
