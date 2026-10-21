@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Products: anyone can read product details and inventory count.
+    // Client writes are disabled (only server routes with Firebase Admin SDK can modify catalog & stock).
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // 2. Users: clients can read user profile and wallet points.
+    // Client writes are blocked to prevent direct wallet manipulation from browser DevTools.
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // 3. Orders: users can view order history and real-time status.
+    // Client writes are blocked (only server routes with Admin SDK generate and verify orders).
+    match /orders/{orderId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // 4. Payments: strictly private to server and webhook processing.
+    match /payments/{paymentId} {
+      allow read, write: if false;
+    }
+
+    // 5. Errors: internal error and jam audit logs (server / Pi admin only).
+    match /errors/{errorId} {
+      allow read, write: if false;
+    }
+
+    // Default catch-all: deny all client access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

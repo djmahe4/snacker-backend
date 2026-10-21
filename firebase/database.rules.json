@@ -1,0 +1,12 @@
+{
+  "rules": {
+    "onStockUpdation": {
+      "status": {
+        ".read": true,
+        ".write": false
+      }
+    },
+    ".read": false,
+    ".write": false
+  }
+}
