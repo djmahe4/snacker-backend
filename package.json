@@ -1,0 +1,34 @@
+{
+  "name": "snacker-backend",
+  "version": "1.0.0",
+  "description": "Backend API, Hardware Daemon (Raspberry Pi & Arduino Mega), and Firebase Infrastructure for SNACKER Vending System",
+  "main": "api/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node api/server.js",
+    "dev": "node --watch api/server.js",
+    "seed": "node firebase/seed.js",
+    "test:webhook": "node tests/test_webhook.js"
+  },
+  "keywords": [
+    "snacker",
+    "vending-machine",
+    "iot",
+    "raspberry-pi",
+    "arduino",
+    "firebase",
+    "firestore",
+    "youpi-pg",
+    "upi"
+  ],
+  "author": "SNACKER Team",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase": "^10.12.5",
+    "firebase-admin": "^12.3.1",
+    "nanoid": "^5.0.7"
+  }
+}
