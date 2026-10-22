@@ -1,7 +1,7 @@
 import { adminDb, FieldValue } from "../firebase/admin.js";
 import crypto from "node:crypto";
 
-const WEBHOOK_SECRET = process.env.YOUPI_WEBHOOK_SECRET || "snacker_youpi_secret_8899";
+const WEBHOOK_SECRET = process.env.YOUPI_WEBHOOK_SECRET; // required; server.js refuses to start without it
 
 /**
  * YouPI-PG Dynamic UPI Webhook Handler.
@@ -13,8 +13,8 @@ export async function handleYoupiWebhook(req, res) {
     const signature = req.headers["x-gateway-signature"] || "";
     const timestamp = Number(req.headers["x-gateway-timestamp"]);
 
-    // Stale check (older than 5 minutes ignored)
-    if (timestamp && Date.now() - timestamp > 5 * 60 * 1000) {
+    // Timestamp is mandatory; stale or missing deliveries are ignored (replay protection)
+    if (!Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 5 * 60 * 1000) {
       return res.status(200).json({ received: true, note: "Stale delivery ignored" });
     }
 

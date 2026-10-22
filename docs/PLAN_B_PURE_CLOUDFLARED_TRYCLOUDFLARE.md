@@ -48,7 +48,7 @@ flowchart TD
         YouPIAPI["YouPI Core REST API (:6100)"]
         PiVending["Vending Controller (evdev)"]
         ArduinoMega["Arduino Mega 2560"]
-        HardwareKiosk["Fingers QuickScan + 12V Relays + IR Sensor"]
+        HardwareKiosk["Fingers QuickScan + 12V Relays + optional IR Sensor"]
     end
 
     %% Flow 1: Wallet Recharge
@@ -305,7 +305,7 @@ In your Vercel Project Settings:
 
 1. **Environment Variables**:
    - `NEXT_PUBLIC_YOUPI_MERCHANT_ID`: `snacker-merchant-01`
-   - `YOUPI_WEBHOOK_SECRET`: `snacker_youpi_secret_8899`
+   - `YOUPI_WEBHOOK_SECRET`: a random value from `openssl rand -hex 32` (must match the gateway's `MERCHANT_WEBHOOK_SECRET`)
    - If using manual URL:
      - `NEXT_PUBLIC_YOUPI_HOST`: `https://ancient-sample-word-sf.trycloudflare.com`
      - `YOUPI_GATEWAY_URL`: `https://ancient-sample-word-sf.trycloudflare.com/api/v1`

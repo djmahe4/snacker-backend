@@ -1,6 +1,7 @@
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getDatabase } from "firebase-admin/database";
+import { getAuth } from "firebase-admin/auth";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
@@ -71,5 +72,6 @@ if (getApps().length > 0) {
 
 export const adminDb = getFirestore(adminApp);
 export const adminRtdb = getDatabase(adminApp);
+export const adminAuth = getAuth(adminApp);
 export { FieldValue };
 export default adminApp;

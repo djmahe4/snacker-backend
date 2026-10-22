@@ -1,19 +1,13 @@
 import { adminDb, adminRtdb, FieldValue } from "../firebase/admin.js";
 import { DEFAULT_SNACKS } from "../firebase/seed.js";
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "example@gmail.com";
-
 /**
  * Handles admin inventory operations, restocking, catalog seeding, and maintenance toggle.
  */
 export async function handleAdminActions(req, res) {
   try {
-    const { action, payload, requesterEmail } = req.body;
-
-    // Strict admin authorization check
-    if (requesterEmail?.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-      return res.status(403).json({ success: false, error: "Forbidden: Admin credentials required" });
-    }
+    // Authorization is enforced by the requireAuth + requireAdmin middleware (verified ID token).
+    const { action, payload } = req.body;
 
     switch (action) {
       case "get_catalog": {

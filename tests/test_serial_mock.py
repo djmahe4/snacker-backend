@@ -6,7 +6,7 @@ Emulates:
   - STATUS
   - PING -> PONG
   - TEST_ALL
-  - DISPENSE:<SLOT>:<QTY> -> STATUS:DISPENSING:<SLOT> -> DONE:<SLOT>:VERIFIED
+  - DISPENSE:<SLOT>:<QTY> -> STATUS:DISPENSING:<SLOT> -> DONE:<SLOT>:TIMED
 """
 
 import sys
@@ -43,7 +43,7 @@ def handle_command(cmd):
             for q in range(qty):
                 print(f"STATUS:DISPENSING:{slot}")
                 time.sleep(1.0)  # Simulate motor turning
-                print(f"DONE:{slot}:VERIFIED")
+                print(f"DONE:{slot}:TIMED")
                 if q < qty - 1:
                     time.sleep(0.5)
             return

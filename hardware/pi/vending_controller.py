@@ -157,6 +157,20 @@ def refund_credits(user_id, amount, order_id, reason):
     except Exception as e:
         print(f"[ERROR] Refund transaction failed: {e}")
 
+def restore_stock(items):
+    """Returns reserved stock for items that were never delivered."""
+    for item in items:
+        product_id = item.get("productId")
+        if not product_id:
+            continue
+        try:
+            db.collection("products").document(product_id).update(
+                {"stock": firestore.Increment(int(item.get("count", 1)))}
+            )
+            print(f"[STOCK] Restored {item.get('count', 1)} unit(s) of '{product_id}'")
+        except Exception as e:
+            print(f"[ERROR] Could not restore stock for '{product_id}': {e}")
+
 @firestore.transactional
 def _lock_order(transaction, order_ref):
     """Atomically move pending -> dispensing. Returns order data, or None if not vendable."""
@@ -195,6 +209,7 @@ def process_order(order_id, ser):
 
     all_vended = True
     failure_reason = ""
+    undelivered = list(products)  # items still owed to the customer; shrinks as each one vends
 
     try:
         for item in products:
@@ -210,6 +225,7 @@ def process_order(order_id, ser):
 
             if result == "SUCCESS":
                 print(f"[OK] Slot {slot} dispensed {count} bag(s).")
+                undelivered.remove(item)
             else:
                 all_vended = False
                 failure_reason = f"Slot {slot} status: {result}"
@@ -233,8 +249,14 @@ def process_order(order_id, ser):
                 "error": failure_reason,
                 "updatedAt": firestore.SERVER_TIMESTAMP
             })
-            if user_id and amount > 0:
-                refund_credits(user_id, amount, order_id, failure_reason)
+            # Refund only what was not delivered, and put that stock back
+            try:
+                owed = sum(float(i["price"]) * int(i.get("count", 1)) for i in undelivered)
+            except (KeyError, TypeError, ValueError):
+                owed = amount  # legacy order without per-item prices: refund in full
+            if user_id and owed > 0:
+                refund_credits(user_id, owed, order_id, failure_reason)
+            restore_stock(undelivered)
     except Exception as e:
         print(f"[ERROR] Failed to finalize order '{order_id}': {e}")
 

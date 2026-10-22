@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 
-const WEBHOOK_SECRET = process.env.YOUPI_WEBHOOK_SECRET || "snacker_youpi_secret_8899";
+const WEBHOOK_SECRET = process.env.YOUPI_WEBHOOK_SECRET;
+if (!WEBHOOK_SECRET) {
+  console.error("Set YOUPI_WEBHOOK_SECRET to the same value the server uses.");
+  process.exit(1);
+}
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
 
 async function runWebhookTest() {

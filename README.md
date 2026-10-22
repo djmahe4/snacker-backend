@@ -107,7 +107,7 @@ To prevent any confusion between payment and dispensing, SNACKER uses two comple
 | **Actuators** | 6x 12V DC High-Torque Spiral Motors | Rotates vending spirals for channels A1–A3, B1–B3 |
 | **Power Supply** | 12V 10A DC Regulated PSU | Powers motors and relay coils |
 | **Relay Driver** | 6/8-Channel Opto-Isolated Relay Board | Galvanic isolation between 5V Arduino and 12V motors |
-| **Drop Sensor** | Active Low Infrared (IR) Beam Sensor | Senses falling snack package across drop chute |
+| **Drop Sensor** *(optional)* | Active Low Infrared (IR) Beam Sensor | Verifies a snack fell. Not required: without it the firmware runs each motor for a fixed time (`USE_IR_SENSOR = false`) |
 | **Diodes** | 6x 1N4007 or 1N5819 Schottky | Flyback suppression across motor leads |
 | **Feedback** | 5V Active Buzzer + Green/Red LEDs | Acoustic and visual vending status |
 
@@ -162,10 +162,10 @@ All commands operate at **115200 baud** over USB Serial (`/dev/ttyACM0`):
 | Command | Direction | Description | Response Example |
 | :--- | :---: | :--- | :--- |
 | `PING` | Host ➔ Mega | Keep-alive check | `PONG` |
-| `STATUS` | Host ➔ Mega | Slot inventory & IR beam check | `INFO:SLOTS=A1,A2,A3,B1,B2,B3;DROP_SENSOR=CLEAR` |
+| `STATUS` | Host ➔ Mega | Slot inventory & IR beam check | `INFO:SLOTS=A1,A2,A3,B1,B2,B3;DROP_SENSOR=DISABLED` (or `CLEAR`/`BLOCKED` with a sensor) |
 | `TEST_ALL` | Host ➔ Mega | Diagnostic sequence (600ms per slot) | `INFO:STARTING_SELF_TEST` ... `INFO:SELF_TEST_COMPLETE` |
-| `DISPENSE:<SLOT>:<QTY>` | Host ➔ Mega | Dispense snack from slot | `STATUS:DISPENSING:A1` ➔ `DONE:A1:VERIFIED` |
-| `STOP` | Host ➔ Mega | Emergency motor shutoff | `ALL_MOTORS_STOPPED` |
+| `DISPENSE:<SLOT>:<QTY>` | Host ➔ Mega | Dispense snack from slot; one result line per bag | `STATUS:DISPENSING:A1` ➔ `DONE:A1:TIMED` (no sensor) or `DONE:A1:VERIFIED` (sensor); on failure `WARN:A1:NO_DROP_DETECTED` / `ABORTED` / `SKIPPED` |
+| `STOP` | Host ➔ Mega | Emergency motor shutoff (also aborts a running dispense) | `ALL_MOTORS_STOPPED` / `WARN:<SLOT>:ABORTED` |
 
 ### Bench Testing & Diagnostics
 
@@ -191,13 +191,18 @@ When a QR code is scanned:
 2. If `status == "pending"`, it atomically transitions the order to `"dispensing"` with `dispensedAt: SERVER_TIMESTAMP`.
 3. If scanned again while dispensing or completed, the order is immediately rejected, eliminating replay attacks.
 
-### IR Drop Verification & Auto-Refund
+### Dispense Modes & Auto-Refund
 
-If the spiral motor rotates for `4500ms` without the falling snack breaking the IR beam:
-1. The Arduino stops the motor and reports `WARN:<SLOT>:NO_DROP_DETECTED`.
-2. The daemon marks the order as `"jammed"`.
-3. An automated transaction refunds the order amount back to `users/{userId}.credit`.
-4. The incident is logged into Firestore collection `errors/` for maintenance inspection.
+**Timed mode (default, no IR sensor).** In `snacker_firmware.ino`, `USE_IR_SENSOR = false` runs each motor for `TIMED_RUN_MS` (default `2500`) per bag and reports `DONE:<SLOT>:TIMED`. Tune `TIMED_RUN_MS` to one full spiral turn. Drops cannot be verified in this mode, so jams are not detected.
+
+**Sensor mode.** Set `USE_IR_SENSOR = true` and wire the beam sensor to pin 2. If the motor runs `4500ms` without the beam breaking, the Arduino stops it and reports `WARN:<SLOT>:NO_DROP_DETECTED`.
+
+On any failure (`WARN`, serial error, timeout):
+1. The daemon marks the order as `"jammed"`.
+2. Only the items **not delivered** are refunded to `users/{userId}.credit`, and their stock is restored.
+3. The incident is logged into Firestore collection `errors/` for maintenance inspection.
+
+If you raise `TIMED_RUN_MS` above `4500`, set `MOTOR_RUN_MS` on the Pi to the same value so the daemon's timeout is long enough.
 
 ---
 
@@ -279,13 +284,15 @@ The standalone backend server is located in [`api/server.js`](api/server.js) (Ex
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
 | `/health` | `GET` | Health check & service uptime |
-| `/api/check-availability` | `POST` | Atomic Firestore transaction checking wallet balance & stock |
-| `/api/create-order` | `POST` | Generates verified order with nanoid QR payload |
+| `/api/check-availability` | `POST` | Read-only pre-check of wallet balance & stock (no side effects) |
+| `/api/create-order` | `POST` | One atomic transaction: reserves stock, deducts wallet, creates the order with a nanoid QR payload. Body: `{ products: [{ productId, count }] }`; price and slot are read from `products` |
 | `/api/youpi-webhook` | `POST` | Receives YouPI-PG UPI payment confirmations (HMAC-SHA256 verified) |
 | `/api/order` | `POST` | Starts a dynamic UPI payment session on YouPI-PG |
 | `/api/auth-sync` | `POST` | Syncs user authentication profile and initializes wallet |
 | `/api/admin/actions` | `POST` | Admin inventory controls, stock updates, and maintenance mode |
-| `/api/cancel-reservation` | `POST` | Rollback stock reservation on cancelled checkouts |
+| `/api/cancel-reservation` | `POST` | Cancels the caller's own `pending` order, refunds credit and restores stock. Body: `{ orderId }` |
+
+> **Authentication:** every route except `/health` and `/api/youpi-webhook` requires `Authorization: Bearer <Firebase ID token>`. The user is taken from the token, never from the request body. `/api/admin/actions` additionally requires the token's verified email to equal `ADMIN_EMAIL`. The server will not start without `YOUPI_WEBHOOK_SECRET`.
 
 ---
 

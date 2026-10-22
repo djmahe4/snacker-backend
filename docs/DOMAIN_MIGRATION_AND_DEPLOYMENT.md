@@ -45,7 +45,7 @@ Firebase Firestore              Cloudflare Tunnel (pay.yourdomain.com)
                               Raspberry Pi (Physical Kiosk)
                               ├── YouPI-PG Gateway (:7000 / :6100)
                               ├── Snacker Vending Daemon (USB Scanner)
-                              └── Arduino Mega 2560 (Relay & IR Sensor)
+                              └── Arduino Mega 2560 (Relay, optional IR Sensor)
 ```
 
 ### Topology B: All-in-One Autonomous Kiosk
@@ -65,7 +65,7 @@ When moving from `localhost` to your production domain, update environment varia
 | `NEXT_PUBLIC_YOUPI_HOST` | `http://localhost:7000` | `https://pay.yourdomain.com` | `https://snacker.yourdomain.com` |
 | `YOUPI_GATEWAY_URL` | `http://localhost:6100` | `https://pay.yourdomain.com` (or Tunnel) | `http://127.0.0.1:6100` |
 | `YOUPI_MERCHANT_ID` | `snacker-merchant-01` | `snacker-merchant-01` | `snacker-merchant-01` |
-| `YOUPI_WEBHOOK_SECRET` | `snacker_youpi_secret_8899` | *(Strong random 32+ char secret)* | *(Strong random 32+ char secret)* |
+| `YOUPI_WEBHOOK_SECRET` | *(generate: `openssl rand -hex 32`)* | *(Strong random 32+ char secret)* | *(Strong random 32+ char secret)* |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | `/sign-up` | `/sign-up` | `/sign-up` |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | `/sign-in` | `/sign-in` | `/sign-in` |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | `/api/auth/create-user` | `https://snacker.yourdomain.com/api/auth/create-user` | `/api/auth/create-user` |
@@ -84,7 +84,7 @@ Located on the Raspberry Pi at `/home/pi/youpi-pg/.env`:
 | `BASE_PAYMENT_API_URL` | `http://localhost:6100` | `https://pay.yourdomain.com/api/v1` | `https://snacker.yourdomain.com/api/v1` |
 | `BASE_CHECKOUT_URL` | `http://localhost:7000` | `https://pay.yourdomain.com` | `https://snacker.yourdomain.com/checkout` |
 | `MERCHANT_WEBHOOK_URL` | `http://localhost:3000/api/youpi-webhook` | `https://snacker.yourdomain.com/api/youpi-webhook` | `http://127.0.0.1:3000/api/youpi-webhook` |
-| `MERCHANT_WEBHOOK_SECRET`| `snacker_youpi_secret_8899` | *(Must match frontend secret)* | *(Must match frontend secret)* |
+| `MERCHANT_WEBHOOK_SECRET`| *(same value as `YOUPI_WEBHOOK_SECRET`)* | *(Must match frontend secret)* | *(Must match frontend secret)* |
 | `USE_SQLITE_FALLBACK` | `true` | `true` | `true` |
 | `SQLITE_DB_PATH` | `./data/youpi_pg.sqlite` | `./data/youpi_pg.sqlite` | `./data/youpi_pg.sqlite` |
 | `PAYMENT_ACTIVE_WINDOW_MS`| `300000` (5 mins) | `300000` (5 mins) | `300000` (5 mins) |

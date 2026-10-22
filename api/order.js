@@ -11,11 +11,9 @@ const MERCHANT_ID = process.env.YOUPI_MERCHANT_ID || "snacker-merchant-01";
  * Initiates dynamic UPI payment with YouPI-PG Gateway.
  */
 export async function handleCreatePaymentSession(req, res) {
-  const { userId, amount, currency = "INR", returnUrl } = req.body;
+  const userId = req.uid; // verified by requireAuth
+  const { amount, currency = "INR", returnUrl } = req.body;
 
-  if (!userId) {
-    return res.status(401).json({ error: "Unauthorized: Missing userId" });
-  }
   if (!amount || Number(amount) <= 0) {
     return res.status(400).json({ error: "Invalid recharge amount" });
   }

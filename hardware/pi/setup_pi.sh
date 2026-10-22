@@ -84,6 +84,7 @@ if [ ! -f "$YOUPI_DIR/.env" ]; then
     # Generate cryptographic master encryption keys
     MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
     JWT_KEY=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64'))")
+    WEBHOOK_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
     
     cat <<EOF > "$YOUPI_DIR/.env"
 NODE_ENV=production
@@ -106,7 +107,7 @@ PAYMENT_PROCESSING_WINDOW_MS=30000
 
 # Merchant webhook dispatch
 MERCHANT_WEBHOOK_URL=http://localhost:3000/api/youpi-webhook
-MERCHANT_WEBHOOK_SECRET=snacker_youpi_secret_8899
+MERCHANT_WEBHOOK_SECRET=${WEBHOOK_SECRET}
 
 # URLs
 BASE_PAYMENT_API_URL=http://localhost:6100
@@ -117,6 +118,8 @@ EOF
     mkdir -p "$YOUPI_DIR/data"
     npm run db:setup || true
     echo "  ✅ YouPI-PG database initialized in SQLite mode."
+    echo "  🔑 Webhook secret generated. Put the SAME value in the Snacker backend .env as YOUPI_WEBHOOK_SECRET:"
+    echo "     $WEBHOOK_SECRET"
 else
     echo "  ✅ YouPI-PG .env already configured."
 fi

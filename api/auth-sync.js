@@ -6,11 +6,10 @@ import { adminDb, FieldValue } from "../firebase/admin.js";
  */
 export async function handleUserSync(req, res) {
   try {
-    const { userId, name, email } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ error: "Missing required field: userId" });
-    }
+    // Identity comes from the verified ID token, never from the request body.
+    const userId = req.uid;
+    const { name } = req.body;
+    const email = req.userEmail;
 
     const userRef = adminDb.collection("users").doc(userId);
     const userDoc = await userRef.get();

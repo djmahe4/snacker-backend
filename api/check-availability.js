@@ -1,84 +1,39 @@
 import { adminDb } from "../firebase/admin.js";
 
 /**
- * Atomic stock check & wallet credit deduction.
- * Ensures users have sufficient points and slots have sufficient stock before order generation.
+ * Read-only pre-check (no side effects). The actual reservation, wallet deduction
+ * and order creation happen atomically in /api/create-order.
  */
 export async function handleCheckAvailability(req, res) {
   try {
-    const { userId, products, amount } = req.body;
-
-    if (!userId) {
-      return res.status(401).json({ success: false, error: "Unauthorized: Missing userId" });
-    }
-    if (!products || !Array.isArray(products) || products.length === 0) {
+    const { products } = req.body;
+    if (!Array.isArray(products) || products.length === 0) {
       return res.status(400).json({ success: false, error: "Invalid products array" });
     }
 
-    await adminDb.runTransaction(async (transaction) => {
-      const userRef = adminDb.collection("users").doc(userId);
-      const userDoc = await transaction.get(userRef);
-
-      if (!userDoc.exists) {
-        throw new Error("User does not exist");
-      }
-
-      const userCredits = userDoc.data()?.credit ?? 0;
-      if (userCredits < amount) {
-        throw new Error("insufficientCredit");
-      }
-
-      // Retrieve product documents in parallel
-      const productRefs = products.map((product) =>
-        adminDb.collection("products").doc(product.productId)
-      );
-      const productDocs = await transaction.getAll(...productRefs);
-
-      // Verify stock availability and prepare updates
-      for (const productDoc of productDocs) {
-        if (!productDoc.exists) {
-          throw new Error("insufficientStock");
-        }
-        const product = products.find((p) => p.productId === productDoc.id);
-        const productData = productDoc.data();
-        const currentStock = productData?.stock ?? 0;
-        const newStock = currentStock - (product?.count ?? 1);
-
-        if (newStock < 0) {
-          throw new Error("insufficientStock");
-        }
-
-        transaction.update(productDoc.ref, { stock: newStock });
-      }
-
-      // Deduct credits from user
-      const newCredits = userCredits - amount;
-      transaction.update(userRef, { credit: newCredits });
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Purchase Successful: Stock reserved and credits deducted",
-    });
-  } catch (e) {
-    console.error("[CHECK-AVAILABILITY ERROR]:", e.message);
-
-    if (e.message === "insufficientCredit") {
-      return res.status(200).json({ success: false, insufficientCredit: true, error: "Insufficient wallet credits" });
-    } else if (e.message === "insufficientStock") {
-      return res.status(200).json({
-        success: false,
-        insufficientCredit: false,
-        insufficientStock: true,
-        error: "Product is out of stock",
-      });
+    const userDoc = await adminDb.collection("users").doc(req.uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: "User does not exist" });
     }
 
-    return res.status(500).json({
-      success: false,
-      insufficientCredit: false,
-      insufficientStock: false,
-      error: e.message,
-    });
+    const docs = await adminDb.getAll(
+      ...products.map((p) => adminDb.collection("products").doc(String(p.productId)))
+    );
+    let total = 0;
+    for (let i = 0; i < docs.length; i++) {
+      const count = Number(products[i].count ?? 1);
+      const data = docs[i].data();
+      if (!docs[i].exists || !Number.isInteger(count) || count < 1 || (data.stock ?? 0) < count) {
+        return res.status(200).json({ success: false, insufficientCredit: false, insufficientStock: true, error: "Product is out of stock" });
+      }
+      total += Number(data.price) * count;
+    }
+    if ((userDoc.data()?.credit ?? 0) < total) {
+      return res.status(200).json({ success: false, insufficientCredit: true, error: "Insufficient wallet credits" });
+    }
+    return res.status(200).json({ success: true, amount: total, message: "Available" });
+  } catch (e) {
+    console.error("[CHECK-AVAILABILITY ERROR]:", e);
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 }
