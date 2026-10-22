@@ -106,7 +106,7 @@ PAYMENT_ACTIVE_WINDOW_MS=300000
 PAYMENT_PROCESSING_WINDOW_MS=30000
 
 # Merchant webhook dispatch
-MERCHANT_WEBHOOK_URL=http://localhost:3000/api/youpi-webhook
+MERCHANT_WEBHOOK_URL=http://localhost:5000/api/youpi-webhook
 MERCHANT_WEBHOOK_SECRET=${WEBHOOK_SECRET}
 
 # URLs

@@ -83,7 +83,7 @@ Located on the Raspberry Pi at `/home/pi/youpi-pg/.env`:
 | `NODE_ENV` | `development` | `production` | `production` |
 | `BASE_PAYMENT_API_URL` | `http://localhost:6100` | `https://pay.yourdomain.com/api/v1` | `https://snacker.yourdomain.com/api/v1` |
 | `BASE_CHECKOUT_URL` | `http://localhost:7000` | `https://pay.yourdomain.com` | `https://snacker.yourdomain.com/checkout` |
-| `MERCHANT_WEBHOOK_URL` | `http://localhost:3000/api/youpi-webhook` | `https://snacker.yourdomain.com/api/youpi-webhook` | `http://127.0.0.1:3000/api/youpi-webhook` |
+| `MERCHANT_WEBHOOK_URL` | `http://localhost:5000/api/youpi-webhook` | `https://snacker.yourdomain.com/api/youpi-webhook` | `http://127.0.0.1:5000/api/youpi-webhook` |
 | `MERCHANT_WEBHOOK_SECRET`| *(same value as `YOUPI_WEBHOOK_SECRET`)* | *(Must match frontend secret)* | *(Must match frontend secret)* |
 | `USE_SQLITE_FALLBACK` | `true` | `true` | `true` |
 | `SQLITE_DB_PATH` | `./data/youpi_pg.sqlite` | `./data/youpi_pg.sqlite` | `./data/youpi_pg.sqlite` |
