@@ -1,196 +1,242 @@
 #!/bin/bash
 # =============================================================================
-#  SNACKER + YOUPI-PG UNIFIED RASPBERRY PI AUTOMATED PROVISIONING SCRIPT
+#  SNACKER + YOUPI-PG RASPBERRY PI PROVISIONING
 # =============================================================================
 #  Target OS: Raspberry Pi OS (64-bit Debian Bookworm / Bullseye)
-#  Hardware: Raspberry Pi 3B+ / 4B / 5
-#  Includes:
-#    - System dependencies & Node.js 24 LTS
-#    - Non-root USB HID scanner & Arduino Mega udev access
-#    - Clone & SQLite automated provisioning of gxurav1710/youpi-pg
-#    - Python 3 venv & evdev hardware vending daemon
-#    - Systemd background services (vending controller + payment gateway)
-#    - Nginx reverse proxy with unbuffered HMAC webhooks & SSE streams
+#  Frontend:  Vercel only. Nothing on the Pi serves the PWA.
+#
+#  Paths, user and ports come from hardware/pi/pi.conf (see pi.conf.example).
+#  Every step can run on its own, so you can learn, debug and re-run one piece:
+#
+#    ./setup_pi.sh --list              # show steps
+#    ./setup_pi.sh packages            # run one step
+#    ./setup_pi.sh youpi env services  # run several steps in order
+#    ./setup_pi.sh --dry-run services  # print commands without running them
+#    ./setup_pi.sh --all               # run every step
+#
+#  After any step, run ./doctor.sh to check the result (read-only).
 # =============================================================================
-set -e
+set -euo pipefail
 
-echo "================================================================="
-echo "  🍫 SNACKER & YOUPI-PG PROVISIONING STARTING ON RASPBERRY PI   "
-echo "================================================================="
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+load_pi_conf
 
-# -----------------------------------------------------------------------------
-# 1. System Packages & Node.js 24 LTS
-# -----------------------------------------------------------------------------
-echo "📦 [1/6] Installing Linux system packages & build tools..."
-sudo apt-get update
-sudo apt-get install -y python3 python3-pip python3-venv git nginx libudev-dev curl jq
+DRY_RUN=0
+STEPS_ALL=(packages udev youpi venv env services nginx)
 
-# Install Node.js 24 LTS if not present or older than v20
-NODE_MAJOR=0
-if command -v node >/dev/null 2>&1; then
-    NODE_MAJOR=$(node -v | cut -d'.' -f1 | tr -d 'v')
-fi
+# Print a command, then run it (or only print it with --dry-run)
+run() {
+    echo "  \$ $*"
+    [ "$DRY_RUN" -eq 1 ] || "$@"
+}
 
-if [ "$NODE_MAJOR" -lt 20 ]; then
-    echo "⬇️  Installing Node.js 24 LTS from NodeSource (required for node:sqlite)..."
-    curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-else
-    echo "✅ Node.js $(node -v) is already installed."
-fi
+usage() {
+    cat <<EOF
+Usage: $0 [--dry-run] (--all | --list | STEP...)
 
-# -----------------------------------------------------------------------------
-# 2. USB Permissions (QuickScan Barcode Scanner & Arduino Mega Serial)
-# -----------------------------------------------------------------------------
-echo "🔑 [2/6] Configuring udev rules and non-root hardware access..."
-# Grant user 'pi' access to raw HID input devices (/dev/input/event*) and serial ports (/dev/ttyACM*)
-sudo usermod -a -G input,dialout pi
+Steps:
+  packages  apt packages and Node.js 24
+  udev      scanner/serial udev rules, add $PI_USER to input,dialout
+  youpi     clone/update youpi-pg, npm install, first-time .env + SQLite
+  venv      Python venv + requirements for the vending daemon
+  env       create backend .env (mode 600) and sync the webhook secret from youpi-pg
+  services  install systemd units rendered with pi.conf paths, enable + restart
+  nginx     install hardware/pi/nginx/$NGINX_SITE.conf and reload nginx
 
-# Create persistent udev rules for barcode scanner and serial microcontrollers
-sudo bash -c 'cat <<EOF > /etc/udev/rules.d/99-snacker-scanner.rules
-SUBSYSTEM=="input", ATTRS{name}=="*Barcode*", MODE="0660", GROUP="input"
+Config: $PI_CONF_LOADED
+EOF
+}
+
+step_packages() {
+    echo "📦 Installing system packages..."
+    run sudo apt-get update
+    run sudo apt-get install -y python3 python3-pip python3-venv git nginx libudev-dev curl jq
+
+    local node_major=0
+    if command -v node >/dev/null 2>&1; then
+        node_major=$(node -v | cut -d'.' -f1 | tr -d 'v')
+    fi
+    if [ "$node_major" -lt 20 ]; then
+        echo "⬇️  Installing Node.js 24 LTS (required for node:sqlite)..."
+        echo "  \$ curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -"
+        [ "$DRY_RUN" -eq 1 ] || curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+        run sudo apt-get install -y nodejs
+    else
+        echo "  ✅ Node.js $(node -v) already installed."
+    fi
+}
+
+step_udev() {
+    echo "🔑 Configuring udev rules and hardware access for $PI_USER..."
+    run sudo usermod -a -G input,dialout "$PI_USER"
+    local rules='SUBSYSTEM=="input", ATTRS{name}=="*Barcode*", MODE="0660", GROUP="input"
 SUBSYSTEM=="input", ATTRS{name}=="*Scanner*", MODE="0660", GROUP="input"
 SUBSYSTEM=="input", ATTRS{name}=="*QuickScan*", MODE="0660", GROUP="input"
 SUBSYSTEM=="input", ATTRS{name}=="*W106*", MODE="0660", GROUP="input"
 KERNEL=="ttyACM[0-9]*", MODE="0660", GROUP="dialout"
-KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout"
-EOF'
+KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout"'
+    echo "  \$ (write) /etc/udev/rules.d/99-snacker-scanner.rules"
+    [ "$DRY_RUN" -eq 1 ] || printf '%s\n' "$rules" | sudo tee /etc/udev/rules.d/99-snacker-scanner.rules >/dev/null
+    run sudo udevadm control --reload-rules
+    run sudo udevadm trigger
+    echo "  ℹ️  Log out and back in for the new groups to apply to $PI_USER."
+}
 
-sudo udevadm control --reload-rules
-sudo udevadm trigger
+step_youpi() {
+    echo "💳 Setting up YouPI-PG in $YOUPI_DIR..."
+    if [ ! -d "$YOUPI_DIR" ]; then
+        run git clone https://github.com/gxurav1710/youpi-pg.git "$YOUPI_DIR"
+    else
+        run git -C "$YOUPI_DIR" pull --ff-only
+    fi
+    run npm --prefix "$YOUPI_DIR" install --omit=dev
 
-# -----------------------------------------------------------------------------
-# 3. Clone & Provision YouPI-PG Gateway (gxurav1710/youpi-pg)
-# -----------------------------------------------------------------------------
-YOUPI_DIR="/home/pi/youpi-pg"
-echo "💳 [3/6] Setting up YouPI-PG Dynamic UPI Payment Gateway in $YOUPI_DIR..."
-
-if [ ! -d "$YOUPI_DIR" ]; then
-    echo "  Cloning gxurav1710/youpi-pg repository..."
-    git clone https://github.com/gxurav1710/youpi-pg.git "$YOUPI_DIR"
-else
-    echo "  YouPI-PG directory already exists. Pulling latest updates..."
-    cd "$YOUPI_DIR" && git pull || true
-fi
-
-cd "$YOUPI_DIR"
-echo "  Installing YouPI-PG dependencies..."
-npm install --omit=dev
-
-# Generate production environment file if not present
-if [ ! -f "$YOUPI_DIR/.env" ]; then
-    echo "  Generating production credentials for YouPI-PG (SQLite WAL Mode)..."
-    
-    # Generate cryptographic master encryption keys
-    MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
-    JWT_KEY=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64'))")
-    WEBHOOK_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
-    
-    cat <<EOF > "$YOUPI_DIR/.env"
+    if [ -f "$YOUPI_DIR/.env" ]; then
+        echo "  ✅ $YOUPI_DIR/.env already exists; not touching it."
+    else
+        echo "  Generating $YOUPI_DIR/.env with fresh keys (values are not printed)..."
+        if [ "$DRY_RUN" -eq 0 ]; then
+            local master jwt webhook
+            master=$(openssl rand -hex 32)
+            jwt=$(openssl rand -base64 24)
+            webhook=$(openssl rand -hex 32)
+            ( umask 077; cat > "$YOUPI_DIR/.env" <<EOF
 NODE_ENV=production
 CONTROL_CENTER_PORT=8090
-PAYMENT_API_PORT=6100
-CHECKOUT_PORTAL_PORT=7000
-MERCHANT_ADMIN_PORT=6001
+PAYMENT_API_PORT=${YOUPI_API_PORT}
+CHECKOUT_PORTAL_PORT=${YOUPI_CHECKOUT_PORT}
+MERCHANT_ADMIN_PORT=${YOUPI_ADMIN_PORT}
 
 # Zero-dependency embedded SQLite for ARM64 Raspberry Pi
 USE_SQLITE_FALLBACK=true
 SQLITE_DB_PATH=./data/youpi_pg.sqlite
 
 # Security & Secrets
-ENCRYPTION_MASTER_KEY=${MASTER_KEY}
-JWT_SECRET=${JWT_KEY}
+ENCRYPTION_MASTER_KEY=${master}
+JWT_SECRET=${jwt}
 
 # Timers (5-min active slot, 30s verification)
 PAYMENT_ACTIVE_WINDOW_MS=300000
 PAYMENT_PROCESSING_WINDOW_MS=30000
 
-# Merchant webhook dispatch
-MERCHANT_WEBHOOK_URL=http://localhost:5000/api/youpi-webhook
-MERCHANT_WEBHOOK_SECRET=${WEBHOOK_SECRET}
+# Merchant webhook dispatch (Express backend on the Pi)
+MERCHANT_WEBHOOK_URL=http://localhost:${BACKEND_PORT}/api/youpi-webhook
+MERCHANT_WEBHOOK_SECRET=${webhook}
 
 # URLs
-BASE_PAYMENT_API_URL=http://localhost:6100
-BASE_CHECKOUT_URL=http://localhost:7000
+BASE_PAYMENT_API_URL=http://localhost:${YOUPI_API_PORT}
+BASE_CHECKOUT_URL=http://localhost:${YOUPI_CHECKOUT_PORT}
 EOF
+            )
+        fi
+        run mkdir -p "$YOUPI_DIR/data"
+        echo "  \$ (cd $YOUPI_DIR && npm run db:setup)"
+        [ "$DRY_RUN" -eq 1 ] || (cd "$YOUPI_DIR" && npm run db:setup) || true
+        echo "  ℹ️  Run './setup_pi.sh env' to copy the webhook secret into the backend .env."
+    fi
+    run sudo chown -R "$PI_USER:$PI_USER" "$YOUPI_DIR"
+}
 
-    # Initialize clean SQLite schema
-    mkdir -p "$YOUPI_DIR/data"
-    npm run db:setup || true
-    echo "  ✅ YouPI-PG database initialized in SQLite mode."
-    echo "  🔑 Webhook secret generated. Put the SAME value in the Snacker backend .env as YOUPI_WEBHOOK_SECRET:"
-    echo "     $WEBHOOK_SECRET"
-else
-    echo "  ✅ YouPI-PG .env already configured."
-fi
+step_venv() {
+    echo "🐍 Setting up Python venv in $BACKEND_DIR/venv..."
+    [ -d "$BACKEND_DIR/venv" ] || run python3 -m venv "$BACKEND_DIR/venv"
+    run "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
+    run "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/hardware/pi/requirements.txt"
+}
 
-# Ensure user pi owns the folder
-sudo chown -R pi:pi "$YOUPI_DIR"
+step_env() {
+    local env_file="$BACKEND_DIR/.env"
+    echo "🔐 Preparing $env_file..."
+    if [ ! -f "$env_file" ]; then
+        run cp "$BACKEND_DIR/.env.example" "$env_file"
+        echo "  ✏️  Edit $env_file: set ADMIN_EMAIL, CLERK_SECRET_KEY, Firebase values."
+    fi
+    run chmod 600 "$env_file"
+    [ -f "$YOUPI_DIR/.env" ] && run chmod 600 "$YOUPI_DIR/.env"
+    [ -f "$SERVICE_ACCOUNT_PATH" ] && run chmod 600 "$SERVICE_ACCOUNT_PATH"
 
-# -----------------------------------------------------------------------------
-# 4. Setup Python Virtual Environment for SNACKER Vending Daemon
-# -----------------------------------------------------------------------------
-echo "🐍 [4/6] Setting up Python virtual environment for Vending Controller..."
-SNACKER_DIR="/home/pi/snacker"
-VENV_DIR="$SNACKER_DIR/venv"
+    local secret
+    secret=$(env_get "$YOUPI_DIR/.env" MERCHANT_WEBHOOK_SECRET || true)
+    if [ -z "$secret" ]; then
+        echo "  ⚠️  No MERCHANT_WEBHOOK_SECRET in $YOUPI_DIR/.env; run the 'youpi' step first."
+        return 0
+    fi
+    if [ "$(env_get "$env_file" YOUPI_WEBHOOK_SECRET || true)" = "$secret" ]; then
+        echo "  ✅ YOUPI_WEBHOOK_SECRET already matches youpi-pg (fingerprint $(fingerprint "$secret"))."
+        return 0
+    fi
+    echo "  \$ (set) YOUPI_WEBHOOK_SECRET in $env_file from youpi-pg (fingerprint $(fingerprint "$secret"))"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if grep -qE '^YOUPI_WEBHOOK_SECRET=' "$env_file"; then
+            # Bash builtins only, so the secret never appears in a process argument list
+            local tmp line
+            tmp=$(mktemp)
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in
+                    YOUPI_WEBHOOK_SECRET=*) printf 'YOUPI_WEBHOOK_SECRET=%s\n' "$secret" ;;
+                    *) printf '%s\n' "$line" ;;
+                esac
+            done < "$env_file" > "$tmp"
+            cat "$tmp" > "$env_file"
+            rm -f "$tmp"
+        else
+            printf 'YOUPI_WEBHOOK_SECRET=%s\n' "$secret" >> "$env_file"
+        fi
+    fi
+    echo "  ℹ️  Also set the same value in Vercel (YOUPI_WEBHOOK_SECRET), then redeploy."
+}
 
-if [ ! -d "$VENV_DIR" ]; then
-    python3 -m venv "$VENV_DIR"
-fi
+install_unit() {
+    local name="$1"
+    echo "  \$ (render $name with pi.conf) > /etc/systemd/system/$name"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        render_unit "$PI_SCRIPT_DIR/$name" | grep -E '^(User|Group|WorkingDirectory|ExecStart|Environment=PORT)=' | sed 's/^/      /'
+    else
+        render_unit "$PI_SCRIPT_DIR/$name" | sudo tee "/etc/systemd/system/$name" >/dev/null
+    fi
+}
 
-"$VENV_DIR/bin/pip" install --upgrade pip
-if [ -f "$SNACKER_DIR/hardware/pi/requirements.txt" ]; then
-    "$VENV_DIR/bin/pip" install -r "$SNACKER_DIR/hardware/pi/requirements.txt"
-fi
+step_services() {
+    echo "⚙️  Installing systemd units..."
+    install_unit youpi-pg.service
+    install_unit snacker-vending.service
+    install_unit snacker-backend.service
+    run sudo systemctl daemon-reload
+    run sudo systemctl enable youpi-pg.service snacker-vending.service snacker-backend.service
+    run sudo systemctl restart youpi-pg.service snacker-vending.service snacker-backend.service
+}
 
-# -----------------------------------------------------------------------------
-# 5. Install & Enable Systemd Background Daemons
-# -----------------------------------------------------------------------------
-echo "⚙️ [5/6] Registering systemd background services..."
+step_nginx() {
+    local src="$PI_SCRIPT_DIR/nginx/$NGINX_SITE.conf"
+    echo "🌐 Installing nginx site '$NGINX_SITE'..."
+    [ -f "$src" ] || { echo "  ❌ $src not found"; return 1; }
+    run sudo cp "$src" "/etc/nginx/sites-available/$NGINX_SITE"
+    run sudo rm -f /etc/nginx/sites-enabled/default
+    run sudo ln -sf "/etc/nginx/sites-available/$NGINX_SITE" "/etc/nginx/sites-enabled/$NGINX_SITE"
+    run sudo nginx -t
+    run sudo systemctl reload nginx
+}
 
-# A. YouPI-PG Payment Gateway Service
-if [ -f "$SNACKER_DIR/hardware/pi/youpi-pg.service" ]; then
-    sudo cp "$SNACKER_DIR/hardware/pi/youpi-pg.service" /etc/systemd/system/
-fi
+# ---- argument parsing -------------------------------------------------------
+STEPS=()
+[ $# -eq 0 ] && { usage; exit 0; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1 ;;
+        --all) STEPS=("${STEPS_ALL[@]}") ;;
+        --list|-h|--help) usage; exit 0 ;;
+        packages|udev|youpi|venv|env|services|nginx) STEPS+=("$1") ;;
+        *) echo "Unknown step: $1"; usage; exit 1 ;;
+    esac
+    shift
+done
 
-# B. Snacker Vending Hardware Controller
-if [ -f "$SNACKER_DIR/hardware/pi/snacker-vending.service" ]; then
-    sudo cp "$SNACKER_DIR/hardware/pi/snacker-vending.service" /etc/systemd/system/
-fi
-
-# C. Snacker Standalone Backend API (optional)
-if [ -f "$SNACKER_DIR/hardware/pi/snacker-backend.service" ]; then
-    sudo cp "$SNACKER_DIR/hardware/pi/snacker-backend.service" /etc/systemd/system/
-fi
-
-sudo systemctl daemon-reload
-sudo systemctl enable youpi-pg.service snacker-vending.service
-sudo systemctl restart youpi-pg.service snacker-vending.service
-
-# -----------------------------------------------------------------------------
-# 6. Configure Nginx Reverse Proxy
-# -----------------------------------------------------------------------------
-echo "🌐 [6/6] Configuring Nginx reverse proxy with SSE and webhook routes..."
-if [ -f "$SNACKER_DIR/hardware/pi/nginx/snacker.conf" ]; then
-    sudo cp "$SNACKER_DIR/hardware/pi/nginx/snacker.conf" /etc/nginx/sites-available/snacker
-    sudo rm -f /etc/nginx/sites-enabled/default
-    sudo ln -sf /etc/nginx/sites-available/snacker /etc/nginx/sites-enabled/
-    sudo nginx -t
-    sudo systemctl reload nginx
-fi
-
-echo "================================================================="
-echo "✨ SNACKER & YOUPI-PG PROVISIONING COMPLETED SUCCESSFULLY!       "
-echo "================================================================="
-echo "Active Services on Raspberry Pi:"
-echo "  1. YouPI-PG Gateway      : http://localhost:7000 (Checkout Portal)"
-echo "                           : http://localhost:6100 (Payment REST API)"
-echo "                           : http://localhost:6001 (Merchant Admin)"
-echo "  2. Vending Controller    : Fingers QuickScan + Arduino Mega Daemon"
-echo "  3. Nginx Reverse Proxy   : Port 80 -> UI & Gateway endpoints"
-echo ""
-echo "Monitoring Commands:"
-echo "  View Vending Scanner Logs: sudo journalctl -u snacker-vending.service -f"
-echo "  View YouPI Gateway Logs  : sudo journalctl -u youpi-pg.service -f"
-echo "  Check Service Status     : sudo systemctl status youpi-pg.service snacker-vending.service"
-echo "================================================================="
+echo "Config: $PI_CONF_LOADED"
+[ "$DRY_RUN" -eq 1 ] && echo "Dry run: commands are printed, not executed."
+for s in "${STEPS[@]}"; do
+    echo
+    "step_$s"
+done
+echo
+echo "Done. Check the result with: $PI_SCRIPT_DIR/doctor.sh"

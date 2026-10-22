@@ -75,3 +75,6 @@ Desktop.ini
 *.hex
 *.elf
 *.bin
+
+# Pi deployment config (paths/ports, per machine)
+hardware/pi/pi.conf

@@ -298,23 +298,47 @@ The standalone backend server is located in [`api/server.js`](api/server.js) (Ex
 
 ## 📦 Raspberry Pi Deployment Guide
 
-### Automated Setup
+### Setup (step by step)
 
-Clone and execute the installation script on the Raspberry Pi:
+The frontend is hosted on **Vercel only**. The Pi runs the Express backend, YouPI-PG, the vending daemon and Nginx.
+
+**1. Clone and configure paths/ports.** `hardware/pi/pi.conf` holds the Linux user, clone paths, Nginx site and ports (no secrets). It is gitignored, so each Pi keeps its own.
 
 ```bash
-git clone https://github.com/djmahe4/snacker-backend.git /home/pi/snacker
-cd /home/pi/snacker
-chmod +x hardware/pi/setup_pi.sh
-./hardware/pi/setup_pi.sh
+git clone https://github.com/djmahe4/snacker-backend.git ~/snacker-backend
+cd ~/snacker-backend/hardware/pi
+cp pi.conf.example pi.conf
+nano pi.conf          # e.g. PI_USER=melvin, BACKEND_DIR=/home/melvin/snacker-backend
+chmod +x setup_pi.sh doctor.sh
 ```
 
-The script automatically:
-1. Installs system packages, Python venv, and **Node.js 24 LTS** (for native `node:sqlite`).
-2. Configures `udev` rules allowing non-root hardware access to the Fingers QuickScan scanner and Arduino Mega.
-3. Clones and provisions **`gxurav1710/youpi-pg`** at `/home/pi/youpi-pg` with embedded SQLite, cryptographic keys, and database tables.
-4. Registers and starts all **systemd background daemons** (`youpi-pg.service`, `snacker-vending.service`).
-5. Configures the unified **Nginx reverse proxy** with WebSocket and unbuffered SSE/webhook support.
+**2. Run the setup one step at a time.** Each step prints every command before running it. Add `--dry-run` to only print them.
+
+```bash
+./setup_pi.sh --list              # what each step does
+./setup_pi.sh --dry-run packages  # preview
+./setup_pi.sh packages            # apt packages + Node.js 24
+./setup_pi.sh udev                # scanner/serial access (log out and in afterwards)
+./setup_pi.sh youpi               # clone youpi-pg, first-time .env with fresh keys + SQLite
+./setup_pi.sh venv                # Python venv for the vending daemon
+./setup_pi.sh env                 # backend .env (mode 600) + copy webhook secret from youpi-pg
+./setup_pi.sh services            # systemd units rendered with pi.conf paths/user
+./setup_pi.sh nginx               # installs hardware/pi/nginx/$NGINX_SITE.conf (snacker-quick)
+```
+
+`./setup_pi.sh --all` runs everything in that order. Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
+
+**3. Check the result with the doctor (read-only).**
+
+```bash
+./doctor.sh                 # everything
+./doctor.sh env             # only env files + secret match
+./doctor.sh systemd ports   # only services and listening ports
+```
+
+Sections: `files` (permissions, nothing secret tracked by git), `env` (required keys set, no placeholders, no leaked secret, backend and YouPI-PG webhook secrets match by fingerprint, `MERCHANT_WEBHOOK_URL` points at the backend port), `systemd` (units installed, `WorkingDirectory`/`User` match `pi.conf`, active), `ports` (backend, YouPI-PG and Nginx listening, nothing on `:3000`), `nginx` (enabled site, webhook routed to the backend port with request buffering off, drift from the repo copy, `nginx -t`), `http` (backend `/health`, an unsigned webhook through Nginx is rejected by Express and not a `502`). It exits non-zero when any check fails.
+
+To compare the Vercel `YOUPI_WEBHOOK_SECRET` with the Pi without printing it, run `printf '%s' "$VALUE" | sha256sum | cut -c1-8` wherever you have the value and compare with the fingerprint the doctor shows.
 
 ---
 
