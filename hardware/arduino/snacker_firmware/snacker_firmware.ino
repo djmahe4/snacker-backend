@@ -45,6 +45,12 @@ const int PIN_BUZZER         = 10;  // 5V Active Acoustic Feedback
 const unsigned long MAX_MOTOR_RUN_MS  = 4500;  // Max motor cycle before timeout cutoff (anti-burnout)
 const unsigned long MIN_DROP_CLEAR_MS = 300;   // Debounce clearance after snack drops through chute
 
+// --- DROP VERIFICATION MODE ---
+// No IR sensor installed -> false: each bag is a fixed timed motor run, always reported as success.
+// IR sensor wired to pin 2  -> true: motor runs until the beam breaks (or MAX_MOTOR_RUN_MS expires).
+const bool USE_IR_SENSOR = false;
+const unsigned long TIMED_RUN_MS = 2500;       // Motor run per bag when USE_IR_SENSOR is false. TUNE to one full coil turn.
+
 // Relay Boards are typically Active-LOW (LOW = Energized, HIGH = Cut)
 const int RELAY_ACTIVE   = LOW;
 const int RELAY_INACTIVE = HIGH;
@@ -101,8 +107,10 @@ void setup() {
   }
 
   // Setup IR Drop Beam Sensor on Interrupt Pin 2
-  pinMode(PIN_IR_DROP_SENSOR, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_IR_DROP_SENSOR), isr_snackDropDetected, FALLING);
+  if (USE_IR_SENSOR) {
+    pinMode(PIN_IR_DROP_SENSOR, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PIN_IR_DROP_SENSOR), isr_snackDropDetected, FALLING);
+  }
 
   // Power-on acoustic confirmation
   soundBuzzer(2, 70);
@@ -112,6 +120,17 @@ void setup() {
 // ---------------------------------------------------------------------
 // DISPENSE CORE ROUTINE
 // ---------------------------------------------------------------------
+// Non-blocking emergency stop check used while a motor is running.
+// Returns true if a STOP command arrived (any other input is discarded).
+bool stopRequested() {
+  while (Serial.available() > 0) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line == "STOP") return true;
+  }
+  return false;
+}
+
 bool executeMotorCycle(int pin, String slotId) {
   digitalWrite(PIN_LED_GREEN, HIGH);
   digitalWrite(PIN_LED_RED, LOW);
@@ -119,17 +138,18 @@ bool executeMotorCycle(int pin, String slotId) {
 
   Serial.println("STATUS:DISPENSING:" + slotId);
 
+  unsigned long runLimit = USE_IR_SENSOR ? MAX_MOTOR_RUN_MS : TIMED_RUN_MS;
+  bool dropConfirmed = false;
+  bool aborted = false;
+
   // Energize Motor Relay
   digitalWrite(pin, RELAY_ACTIVE);
-
   unsigned long startTime = millis();
-  bool dropConfirmed = false;
 
-  // Run motor until IR beam break triggers or watchdog timer expires
-  while (millis() - startTime < MAX_MOTOR_RUN_MS) {
-    if (g_snackDropped) {
-      // Snack fell through the drop chute!
-      delay(MIN_DROP_CLEAR_MS);
+  while (millis() - startTime < runLimit) {
+    if (stopRequested()) { aborted = true; break; }
+    if (USE_IR_SENSOR && g_snackDropped) {
+      delay(MIN_DROP_CLEAR_MS);   // let the snack clear the chute
       dropConfirmed = true;
       break;
     }
@@ -140,18 +160,30 @@ bool executeMotorCycle(int pin, String slotId) {
   digitalWrite(pin, RELAY_INACTIVE);
   digitalWrite(PIN_LED_GREEN, LOW);
 
+  if (aborted) {
+    Serial.println("WARN:" + slotId + ":ABORTED");
+    return false;
+  }
+
+  if (!USE_IR_SENSOR) {
+    // Timed mode: no way to verify the drop, a completed run counts as success.
+    soundBuzzer(1, 120);
+    Serial.println("DONE:" + slotId + ":TIMED");
+    return true;
+  }
+
   if (dropConfirmed) {
     soundBuzzer(1, 120);
     Serial.println("DONE:" + slotId + ":VERIFIED");
     return true;
-  } else {
-    // Motor ran full cycle but IR beam was not tripped (item jammed or slot empty)
-    digitalWrite(PIN_LED_RED, HIGH);
-    soundBuzzer(3, 100);
-    Serial.println("WARN:" + slotId + ":NO_DROP_DETECTED");
-    digitalWrite(PIN_LED_RED, LOW);
-    return false;
   }
+
+  // Motor ran full cycle but IR beam was not tripped (item jammed or slot empty)
+  digitalWrite(PIN_LED_RED, HIGH);
+  soundBuzzer(3, 100);
+  Serial.println("WARN:" + slotId + ":NO_DROP_DETECTED");
+  digitalWrite(PIN_LED_RED, LOW);
+  return false;
 }
 
 // ---------------------------------------------------------------------
@@ -175,7 +207,8 @@ void processIncomingCommand(String cmd) {
       if (i < TOTAL_SLOTS - 1) Serial.print(",");
     }
     Serial.print(";DROP_SENSOR=");
-    Serial.println(digitalRead(PIN_IR_DROP_SENSOR) == LOW ? "BLOCKED" : "CLEAR");
+    if (!USE_IR_SENSOR) Serial.println("DISABLED");
+    else Serial.println(digitalRead(PIN_IR_DROP_SENSOR) == LOW ? "BLOCKED" : "CLEAR");
     return;
   }
 
@@ -210,7 +243,13 @@ void processIncomingCommand(String cmd) {
       }
 
       for (int i = 0; i < count; i++) {
-        executeMotorCycle(pin, slotId);
+        // Every bag reports exactly one DONE/WARN line so the Pi can count results.
+        bool ok = executeMotorCycle(pin, slotId);
+        if (!ok) {
+          // Abort remaining bags; report them as not dispensed so the Pi stops waiting.
+          for (int r = i + 1; r < count; r++) Serial.println("WARN:" + slotId + ":SKIPPED");
+          break;
+        }
         if (i < count - 1) delay(1200); // Inter-bag cooldown pause
       }
       return;

@@ -27,6 +27,7 @@ from firebase_admin import credentials, firestore
 
 # --- CONFIGURATION ---
 SERIAL_BAUD = 115200
+MOTOR_RUN_MS = int(os.environ.get("MOTOR_RUN_MS", "4500"))  # worst-case per-bag run; keep >= firmware value
 FIREBASE_KEY_PATH = os.environ.get(
     "FIREBASE_SERVICE_ACCOUNT_PATH",
     "/home/pi/snacker/serviceAccountKey.json"
@@ -80,7 +81,12 @@ def find_arduino_port():
 def find_scanner_device():
     """Finds Fingers QuickScan-Omni-W106 USB HID device."""
     try:
-        devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+        devices = []
+        for path in evdev.list_devices():
+            d = evdev.InputDevice(path)
+            keys = d.capabilities().get(ecodes.EV_KEY, [])
+            if ecodes.KEY_ENTER in keys and ecodes.KEY_A in keys:  # skips mice / consumer-control nodes
+                devices.append(d)
         for dev in devices:
             name = dev.name.lower()
             if any(k in name for k in ["scanner", "barcode", "omni", "fingers", "w106", "hid"]):
@@ -93,11 +99,12 @@ def find_scanner_device():
         print(f"[SCANNER] Device enumeration warning: {e}")
     return None
 
-def send_arduino_dispense(ser, slot, count=1, timeout=12):
+def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
     """
-    Sends dispense command to Arduino and monitors IR drop sensor telemetry:
-      - 'DONE:<SLOT>:VERIFIED'        -> Item dropped successfully
-      - 'WARN:<SLOT>:NO_DROP_DETECTED' -> Item jammed or coil empty
+    Sends DISPENSE:<slot>:<count> and waits for one result line per bag:
+      - 'DONE:<SLOT>:TIMED' / 'DONE:<SLOT>:VERIFIED' -> bag dispensed
+      - 'WARN:<SLOT>:...'                            -> bag failed (jam / abort / skipped)
+    Returns SUCCESS only if every bag succeeded, otherwise JAMMED / TIMEOUT / ERROR.
     """
     try:
         ser.reset_input_buffer()
@@ -105,18 +112,26 @@ def send_arduino_dispense(ser, slot, count=1, timeout=12):
         ser.write(cmd.encode("utf-8"))
         print(f"[ARDUINO ->] {cmd.strip()}")
 
+        # Each bag: motor run + 1.2s cooldown, plus a safety margin
+        timeout = count * (run_ms / 1000.0 + 1.5) + 5
+        results = 0
         start = time.time()
         while time.time() - start < timeout:
             if ser.in_waiting > 0:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
                 print(f"[ARDUINO <-] {line}")
-                if ":VERIFIED" in line:
-                    return "SUCCESS"
-                elif ":NO_DROP_DETECTED" in line:
-                    return "JAMMED"
-                elif line.startswith("ERROR:"):
+                if line.startswith("ERROR:"):
                     return "ERROR"
-            time.sleep(0.05)
+                if line.startswith("WARN:"):
+                    return "JAMMED"
+                if line.startswith("DONE:"):
+                    results += 1
+                    if results >= count:
+                        return "SUCCESS"
+            else:
+                time.sleep(0.05)
         return "TIMEOUT"
     except Exception as e:
         print(f"[SERIAL] Communication error: {e}")
@@ -126,10 +141,8 @@ def refund_credits(user_id, amount, order_id, reason):
     """Refunds credits back to student's wallet if a slot jams."""
     try:
         user_ref = db.collection("users").document(user_id)
-        user_doc = user_ref.get()
-        if user_doc.exists:
-            current_credit = user_doc.to_dict().get("credit", 0)
-            user_ref.update({"credit": current_credit + amount})
+        if user_ref.get().exists:
+            user_ref.update({"credit": firestore.Increment(amount)})  # atomic, no lost updates
             print(f"[REFUND] Refunded {amount} pts to user '{user_id}' (Reason: {reason})")
 
         # Log incident in Firestore errors collection for inventory audit
@@ -144,70 +157,86 @@ def refund_credits(user_id, amount, order_id, reason):
     except Exception as e:
         print(f"[ERROR] Refund transaction failed: {e}")
 
+@firestore.transactional
+def _lock_order(transaction, order_ref):
+    """Atomically move pending -> dispensing. Returns order data, or None if not vendable."""
+    snap = order_ref.get(transaction=transaction)
+    if not snap.exists:
+        print(f"[REJECT] Order '{order_ref.id}' does not exist in database.")
+        return None
+    data = snap.to_dict()
+    if data.get("status") != "pending":
+        print(f"[REJECT] Order '{order_ref.id}' has status '{data.get('status')}'. Cannot vend.")
+        return None
+    transaction.update(order_ref, {
+        "status": "dispensing",
+        "dispensedAt": firestore.SERVER_TIMESTAMP,
+    })
+    return data
+
 def process_order(order_id, ser):
     print("\n" + "=" * 60)
     print(f"[SCAN] Scanned Order ID: {order_id}")
     order_ref = db.collection("orders").document(order_id)
-    doc_snap = order_ref.get()
 
-    if not doc_snap.exists:
-        print(f"[REJECT] Order '{order_id}' does not exist in database.")
+    try:
+        order_data = _lock_order(db.transaction(), order_ref)
+    except Exception as e:
+        print(f"[ERROR] Could not read/lock order: {e}")
+        print("=" * 60 + "\n")
+        return
+    if order_data is None:
         print("=" * 60 + "\n")
         return
 
-    order_data = doc_snap.to_dict()
-    status = order_data.get("status", "")
     user_id = order_data.get("userId", "")
     amount = order_data.get("amount", 0)
     products = order_data.get("products", [])
 
-    if status != "pending":
-        print(f"[REJECT] Order '{order_id}' has status '{status}'. Cannot vend.")
-        print("=" * 60 + "\n")
-        return
-
-    # 1. Lock order state immediately to prevent replay / double scan
-    order_ref.update({
-        "status": "dispensing",
-        "dispensedAt": firestore.SERVER_TIMESTAMP
-    })
-
     all_vended = True
     failure_reason = ""
 
-    # 2. Iterate through ordered items
-    for item in products:
-        slot = item.get("position", "A1").upper()
-        count = int(item.get("count", 1))
-        name = item.get("name", "Chips")
+    try:
+        for item in products:
+            slot = str(item.get("position", "")).upper()
+            count = int(item.get("count", 1))
+            name = item.get("name", "Chips")
+            if not slot:
+                all_vended, failure_reason = False, "Order item has no slot position"
+                break
 
-        print(f"[DISPATCH] Vending {count}x '{name}' from Slot [{slot}]...")
-        result = send_arduino_dispense(ser, slot, count)
+            print(f"[DISPATCH] Vending {count}x '{name}' from Slot [{slot}]...")
+            result = send_arduino_dispense(ser, slot, count)
 
-        if result == "SUCCESS":
-            print(f"[OK] Slot {slot} dispense physically confirmed by IR sensor.")
+            if result == "SUCCESS":
+                print(f"[OK] Slot {slot} dispensed {count} bag(s).")
+            else:
+                all_vended = False
+                failure_reason = f"Slot {slot} status: {result}"
+                print(f"[ALERT] {failure_reason}")
+                break
+    except Exception as e:
+        all_vended, failure_reason = False, f"Unexpected error: {e}"
+        print(f"[ALERT] {failure_reason}")
+
+    # Finalize order status & refund on failure (order must never stay stuck in 'dispensing')
+    try:
+        if all_vended:
+            order_ref.update({
+                "status": "completed",
+                "completedAt": firestore.SERVER_TIMESTAMP
+            })
+            print(f"[COMPLETE] Order '{order_id}' successfully finished!")
         else:
-            all_vended = False
-            failure_reason = f"Slot {slot} status: {result}"
-            print(f"[ALERT] {failure_reason}")
-            break
-
-    # 3. Finalize order status & execute automatic refund if jammed
-    if all_vended:
-        order_ref.update({
-            "status": "completed",
-            "completedAt": firestore.SERVER_TIMESTAMP
-        })
-        print(f"[COMPLETE] Order '{order_id}' successfully finished!")
-    else:
-        order_ref.update({
-            "status": "jammed",
-            "error": failure_reason,
-            "updatedAt": firestore.SERVER_TIMESTAMP
-        })
-        # Auto-refund points so customer never loses money
-        if user_id and amount > 0:
-            refund_credits(user_id, amount, order_id, failure_reason)
+            order_ref.update({
+                "status": "jammed",
+                "error": failure_reason,
+                "updatedAt": firestore.SERVER_TIMESTAMP
+            })
+            if user_id and amount > 0:
+                refund_credits(user_id, amount, order_id, failure_reason)
+    except Exception as e:
+        print(f"[ERROR] Failed to finalize order '{order_id}': {e}")
 
     print("=" * 60 + "\n")
 
