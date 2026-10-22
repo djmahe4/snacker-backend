@@ -292,7 +292,7 @@ The standalone backend server is located in [`api/server.js`](api/server.js) (Ex
 | `/api/admin/actions` | `POST` | Admin inventory controls, stock updates, and maintenance mode |
 | `/api/cancel-reservation` | `POST` | Cancels the caller's own `pending` order, refunds credit and restores stock. Body: `{ orderId }` |
 
-> **Authentication:** every route except `/health` and `/api/youpi-webhook` requires `Authorization: Bearer <Firebase ID token>`. The user is taken from the token, never from the request body. `/api/admin/actions` additionally requires the token's verified email to equal `ADMIN_EMAIL`. The server will not start without `YOUPI_WEBHOOK_SECRET`.
+> **Authentication:** every route except `/health` and `/api/youpi-webhook` requires `Authorization: Bearer <Clerk session token>` (from `getToken()` in `@clerk/nextjs`). The user is taken from the token, never from the request body. `/api/admin/actions` additionally requires the user's verified primary email to equal `ADMIN_EMAIL`. The server will not start without `YOUPI_WEBHOOK_SECRET` and `CLERK_SECRET_KEY`.
 
 ---
 

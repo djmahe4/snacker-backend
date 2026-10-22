@@ -6,7 +6,7 @@ import { adminDb, FieldValue } from "../firebase/admin.js";
  */
 export async function handleUserSync(req, res) {
   try {
-    // Identity comes from the verified ID token, never from the request body.
+    // Identity comes from the verified Clerk session token, never from the request body.
     const userId = req.uid;
     const { name } = req.body;
     const email = req.userEmail;

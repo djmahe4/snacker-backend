@@ -12,7 +12,7 @@ class OrderError extends Error {
  * Creates a paid order in one atomic transaction:
  *   verify stock -> reserve stock -> deduct wallet -> write pending order.
  * Price, slot and name come from the `products` collection, never from the client.
- * Request: { products: [{ productId, count }] } with a Bearer ID token.
+ * Request: { products: [{ productId, count }] } with a Bearer Clerk session token.
  */
 export async function handleCreateOrder(req, res) {
   try {

@@ -1,8 +1,11 @@
-import { adminAuth } from "../firebase/admin.js";
+import { createClerkClient, verifyToken } from "@clerk/backend";
+
+const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
 /**
- * Verifies the Firebase ID token in `Authorization: Bearer <token>`.
- * Sets req.uid and req.userEmail. The client-supplied userId is never trusted.
+ * Verifies the Clerk session token in `Authorization: Bearer <token>`
+ * (from `getToken()` on the frontend). Sets req.uid to the Clerk user id and
+ * req.userEmail to the user's verified primary email. The client-supplied userId is never trusted.
  */
 export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
@@ -11,9 +14,18 @@ export async function requireAuth(req, res, next) {
     return res.status(401).json({ success: false, error: "Unauthorized: missing bearer token" });
   }
   try {
-    const decoded = await adminAuth.verifyIdToken(token);
-    req.uid = decoded.uid;
-    req.userEmail = decoded.email_verified ? (decoded.email || "").toLowerCase() : "";
+    const claims = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
+    req.uid = claims.sub;
+    req.userEmail = "";
+    try {
+      const user = await clerk.users.getUser(claims.sub);
+      const primary = user.emailAddresses.find((e) => e.id === user.primaryEmailAddressId);
+      if (primary?.verification?.status === "verified") {
+        req.userEmail = primary.emailAddress.toLowerCase();
+      }
+    } catch (e) {
+      console.error("[AUTH] Failed to load Clerk user:", e.message);
+    }
     return next();
   } catch (e) {
     return res.status(401).json({ success: false, error: "Unauthorized: invalid or expired token" });

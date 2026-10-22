@@ -16,6 +16,10 @@ if (!process.env.YOUPI_WEBHOOK_SECRET) {
   console.error("[FATAL] YOUPI_WEBHOOK_SECRET is not set. Generate one with: openssl rand -hex 32");
   process.exit(1);
 }
+if (!process.env.CLERK_SECRET_KEY) {
+  console.error("[FATAL] CLERK_SECRET_KEY is not set: user requests cannot be authenticated.");
+  process.exit(1);
+}
 if (!process.env.ADMIN_EMAIL) {
   console.warn("[WARN] ADMIN_EMAIL is not set: admin endpoints are disabled.");
 }
@@ -51,7 +55,7 @@ app.get("/health", (req, res) => {
 // Webhook is authenticated by HMAC signature, not by a user token
 app.post("/api/youpi-webhook", handleYoupiWebhook);
 
-// All other routes require a verified Firebase ID token (Authorization: Bearer <token>)
+// All other routes require a verified Clerk session token (Authorization: Bearer <token>)
 app.post("/api/check-availability", requireAuth, handleCheckAvailability);
 app.post("/api/create-order", requireAuth, handleCreateOrder);
 app.post("/api/order", requireAuth, handleCreatePaymentSession);

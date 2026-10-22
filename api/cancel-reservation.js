@@ -2,7 +2,7 @@ import { adminDb, FieldValue } from "../firebase/admin.js";
 
 /**
  * Cancels the caller's own unvended (pending) order: refunds the wallet and restores stock.
- * Request: { orderId } with a Bearer ID token.
+ * Request: { orderId } with a Bearer Clerk session token.
  */
 export async function handleCancelReservation(req, res) {
   try {

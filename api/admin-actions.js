@@ -6,7 +6,7 @@ import { DEFAULT_SNACKS } from "../firebase/seed.js";
  */
 export async function handleAdminActions(req, res) {
   try {
-    // Authorization is enforced by the requireAuth + requireAdmin middleware (verified ID token).
+    // Authorization is enforced by the requireAuth + requireAdmin middleware (verified Clerk session token).
     const { action, payload } = req.body;
 
     switch (action) {
