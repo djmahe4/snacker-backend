@@ -315,6 +315,25 @@ section_upi() {
     fi
     ok "merchant ID: $mid"
     hint "Vercel YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID must equal this (else 400 'Merchant not found')"
+
+    # youpi has no bank link: a payment is only confirmed when an observer reports the bank's
+    # credit alert. With none connected, every payment ends "Not Confirmed".
+    local obs devices gmail sms
+    obs=$(printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 5 -H @- \
+        "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/observers" || true)
+    if ! printf '%s' "$obs" | jq -e '.android' >/dev/null 2>&1; then
+        bad "could not read youpi-pg observers"
+        return
+    fi
+    devices=$(printf '%s' "$obs" | jq -r '.android.totalDevices // 0')
+    gmail=$(printf '%s' "$obs" | jq -r '.gmail.isLoggedIn // false')
+    sms=$(printf '%s' "$obs" | jq -r '.sms.isPaired // false')
+    if [ "$devices" -gt 0 ] || [ "$gmail" = true ] || [ "$sms" = true ]; then
+        ok "payment observer connected (android devices: $devices, gmail: $gmail, sms: $sms)"
+    else
+        bad "no payment observer connected: every payment will end 'Not Confirmed'"
+        hint "pair the Android observer app (README: 'How payments get confirmed')"
+    fi
 }
 
 SECTIONS=("$@")

@@ -33,6 +33,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // 6. Gateway discovery: the live Quick Tunnel URL, written by hardware/pi/sync_quick_tunnel.py
+    // (Admin SDK). Public read so the YouPI Android observer can follow the tunnel when it moves.
+    // Holds no secret: only hostUrl, paymentApiUrl, checkoutUrl, status, updatedAt.
+    match /config/gateway {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // Default catch-all: deny all client access
     match /{document=**} {
       allow read, write: if false;

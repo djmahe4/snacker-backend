@@ -336,6 +336,48 @@ chmod +x setup_pi.sh doctor.sh
 
 `./setup_pi.sh --all` runs everything in that order. Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
 
+#### How payments get confirmed (required: a payment observer)
+
+youpi-pg has **no connection to your bank**. Customers pay your UPI ID directly, and youpi-pg only learns the money arrived when an **observer** reports the bank's credit alert. With no observer connected, every payment ends **"Payment Not Confirmed"** and no wallet is credited. `./doctor.sh upi` fails until one is connected.
+
+```
+customer pays your UPI ID ──> bank sends "Rs 20 credited ... UPI Ref 4xxxxxxxxxxx"
+  ──> observer app on the phone that receives it posts the alert (signed) to youpi-pg
+  ──> youpi-pg matches it to the active checkout on that UPI ID ──> SUCCESS
+  ──> webhook to this backend (127.0.0.1) ──> users/<clerk id>.credit += amount
+```
+
+youpi-pg lets one customer pay a given UPI ID at a time, so an alert for the right amount inside the active window belongs to that session. Clerk only decides *whose* wallet is credited (its user ID travels in the payment's `metadata`); the observer proves *that* money arrived.
+
+**Requirements on the receiving side**
+- The alert must contain a **12-digit UPI reference** (UTR/RRN); youpi-pg rejects alerts without one (`MISSING_12_DIGIT_REFERENCE`). Bank SMS for UPI credits include it.
+- Use a **UPI ID linked to a bank account** (from your bank's app, GPay, PhonePe or BHIM). A **MobiKwik wallet** UPI ID (`@mbk`) does not work: money lands in the wallet, no bank SMS is sent, and MobiKwik's "Money credited via Pocket UPI" notification has no UPI reference.
+- Use a **spare phone** with the bank's SIM. The observer reads every notification and SMS on it, OTPs included.
+
+**Observer app (Android).** We use our fork [djmahe4/YouPI-PG](https://github.com/djmahe4/YouPI-PG) (branch `feat/observer-gateway-discovery`), which adds *gateway discovery*: on a Cloudflare Quick Tunnel the URL changes on every restart, and the fork re-reads the live URL from Firestore `config/gateway` (written by `sync_quick_tunnel.py`) instead of posting to the dead one. Build it with discovery pointed at your Firebase project:
+
+```bash
+cd YouPI-PG/apps/android-observer-app
+./gradlew assembleDebug \
+  -PgatewayDiscoveryUrl='https://firestore.googleapis.com/v1/projects/<firebase-project-id>/databases/(default)/documents/config/gateway'
+# APK: app/build/outputs/apk/debug/app-debug.apk   (JDK 17+, Android SDK 34)
+```
+
+Discovery needs public read on that one document; `firebase/firestore.rules` allows it (it holds only the tunnel URL and status). Deploy the rules after pulling. The upstream prebuilt APK works too, but keeps the URL entered at pairing and must be re-paired after every tunnel restart.
+
+**Pairing.** `./setup_pi.sh observer` prints all of the below for your Pi: the APK build command with your Firebase project ID, the live tunnel URL and a fresh enrollment token.
+1. Install the APK, grant **Notification Listener** access, set battery to **Unrestricted**.
+2. On the Pi, get an enrollment token (valid 10 minutes):
+   ```bash
+   cd ~/youpi-pg
+   TOKEN=$(grep '^ADMIN_API_TOKEN=' .env | cut -d= -f2-); H="Authorization: Bearer $TOKEN"
+   curl -s -H "$H" http://127.0.0.1:6100/api/v1/admin/sms-gateway/pair-qr | jq '{enrollmentToken, expiresAt}'
+   ```
+3. In the app, **type** the current tunnel URL (`https://<name>.trycloudflare.com`, from `journalctl -u sync-quick-tunnel | grep DISCOVERED`) and the token. Do not scan the admin QR: in localhost mode it embeds `http://localhost:6100`, which the phone cannot reach.
+4. `./doctor.sh upi` should show `payment observer connected (android devices: 1, ...)`.
+
+Test with a ₹1 top-up and watch `journalctl -f -u youpi-pg -u snacker-backend`: the payment should reach `SUCCESS` and the backend log `[WEBHOOK] Successfully credited`.
+
 **3. Check the result with the doctor (read-only).**
 
 ```bash
