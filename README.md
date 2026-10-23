@@ -320,11 +320,16 @@ chmod +x setup_pi.sh doctor.sh
 ./setup_pi.sh packages            # apt packages + Node.js 24
 ./setup_pi.sh udev                # scanner/serial access (log out and in afterwards)
 ./setup_pi.sh youpi               # clone youpi-pg, first-time .env with fresh keys + SQLite
+./setup_pi.sh backend             # npm install for the Express API
 ./setup_pi.sh venv                # Python venv for the vending daemon
 ./setup_pi.sh env                 # backend .env (mode 600) + copy webhook secret from youpi-pg
 ./setup_pi.sh services            # systemd units rendered with pi.conf paths/user
 ./setup_pi.sh nginx               # installs hardware/pi/nginx/$NGINX_SITE.conf (snacker-quick)
+./setup_pi.sh tunnel              # cloudflared + URL sync to Firestore and youpi-pg checkout links
+./setup_pi.sh upi                 # REQUIRED: the UPI ID + payee name customers pay to
 ```
+
+> **Set your UPI ID.** youpi-pg starts with a demo receiving account (`merchant@upi`, payee "YOUPI Demo Store"). Until you replace it, customers are shown a UPI ID that is not yours. Run `./setup_pi.sh upi`, or non-interactively `UPI_ID=9876543210@ybl PAYEE_NAME="NAME AS IN BANK" ./setup_pi.sh upi`. Use the payee name exactly as your bank shows it for that UPI ID: payments route by UPI ID alone, but UPI apps show the bank's registered name next to it and a mismatch can make customers hesitate. Re-run the step any time to change either value; no restart is needed. `./doctor.sh upi` shows the active one.
 
 `./setup_pi.sh --all` runs everything in that order. Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
 
@@ -336,7 +341,7 @@ chmod +x setup_pi.sh doctor.sh
 ./doctor.sh systemd ports   # only services and listening ports
 ```
 
-Sections: `files` (permissions, nothing secret tracked by git), `env` (required keys set, no placeholders, no leaked secret, backend and YouPI-PG webhook secrets match by fingerprint, `MERCHANT_WEBHOOK_URL` points at the backend port), `systemd` (units installed, `WorkingDirectory`/`User` match `pi.conf`, active), `ports` (backend, YouPI-PG and Nginx listening, nothing on `:3000`), `nginx` (enabled site, webhook routed to the backend port with request buffering off, drift from the repo copy, `nginx -t`), `http` (backend `/health`, an unsigned webhook through Nginx is rejected by Express and not a `502`). It exits non-zero when any check fails.
+Sections: `files` (permissions, nothing secret tracked by git), `env` (required keys set, no placeholders, no leaked secret, backend and YouPI-PG webhook secrets match by fingerprint, `MERCHANT_WEBHOOK_URL` points at the backend port), `systemd` (units installed, `WorkingDirectory`/`User` match `pi.conf`, active), `ports` (backend, YouPI-PG and Nginx listening, nothing on `:3000`), `nginx` (enabled site, webhook routed to the backend port with request buffering off, drift from the repo copy, `nginx -t`), `http` (backend `/health`, an unsigned webhook through Nginx is rejected by Express and not a `502`), `upi` (an active receiving account exists, it is not the `merchant@upi` demo placeholder, and the payee name is set). It exits non-zero when any check fails.
 
 To compare the Vercel `YOUPI_WEBHOOK_SECRET` with the Pi without printing it, run `printf '%s' "$VALUE" | sha256sum | cut -c1-8` wherever you have the value and compare with the fingerprint the doctor shows.
 

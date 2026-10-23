@@ -251,13 +251,51 @@ section_http() {
     [ "$code" = 200 ] && ok "nginx /youpi.js 200" || warn "nginx /youpi.js returned $code"
 }
 
+section_upi() {
+    echo "== UPI receiving account (youpi-pg)"
+    local token json
+    token=$(env_get "$YOUPI_DIR/.env" ADMIN_API_TOKEN || true)
+    [ -n "$token" ] || token=$(cat "$YOUPI_DIR/data/.secrets/admin_api_token" 2>/dev/null || true)
+    if [ -z "$token" ]; then
+        warn "no youpi-pg admin token (ADMIN_API_TOKEN in $YOUPI_DIR/.env)"
+        hint "./setup_pi.sh upi   (creates the token and sets your UPI ID)"
+        return
+    fi
+    # Token goes via a header file on stdin so it never appears in the process list
+    json=$(printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 5 -H @- \
+        "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/upi-accounts" || true)
+    if ! printf '%s' "$json" | jq -e '.accounts' >/dev/null 2>&1; then
+        bad "could not list UPI accounts (youpi-pg down or token rejected)"
+        return
+    fi
+    local active upi payee
+    active=$(printf '%s' "$json" | jq -r '[.accounts[] | select(.isActive)] | length')
+    if [ "$active" -eq 0 ]; then
+        bad "no active UPI account: payments cannot be collected"
+        hint "./setup_pi.sh upi"
+        return
+    fi
+    upi=$(printf '%s' "$json" | jq -r '[.accounts[] | select(.isActive)][0].upiId')
+    payee=$(printf '%s' "$json" | jq -r '[.accounts[] | select(.isActive)][0].payeeName')
+    if [ "$upi" = "merchant@upi" ]; then
+        bad "active UPI ID is the demo placeholder 'merchant@upi': customers would pay nobody"
+        hint "./setup_pi.sh upi"
+    else
+        ok "active UPI ID: $upi"
+    fi
+    case "$payee" in
+        "YOUPI Demo Store"|"") warn "payee name is '$payee'; set your bank-registered name"; hint "./setup_pi.sh upi" ;;
+        *) ok "payee name: $payee (should match the name your bank shows for this UPI ID)" ;;
+    esac
+}
+
 SECTIONS=("$@")
-[ ${#SECTIONS[@]} -eq 0 ] && SECTIONS=(files env systemd ports nginx http)
+[ ${#SECTIONS[@]} -eq 0 ] && SECTIONS=(files env systemd ports nginx http upi)
 section_config
 for s in "${SECTIONS[@]}"; do
     case "$s" in
-        files|env|systemd|ports|nginx|http) echo; "section_$s" ;;
-        *) echo "Unknown section: $s (files env systemd ports nginx http)"; exit 2 ;;
+        files|env|systemd|ports|nginx|http|upi) echo; "section_$s" ;;
+        *) echo "Unknown section: $s (files env systemd ports nginx http upi)"; exit 2 ;;
     esac
 done
 

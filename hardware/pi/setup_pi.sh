@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel)
+STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -46,6 +46,8 @@ Steps:
   nginx     install hardware/pi/nginx/$NGINX_SITE.conf and reload nginx
   tunnel    cloudflared + sync-quick-tunnel.service: publishes the tunnel URL to
             Firestore and youpi-pg BASE_CHECKOUT_URL on every start
+  upi       set the UPI ID + payee name customers pay to (REQUIRED: default is a demo
+            placeholder). UPI_ID=... PAYEE_NAME=... or answer the prompts
 
 Config: $PI_CONF_LOADED
 EOF
@@ -100,10 +102,11 @@ step_youpi() {
     else
         echo "  Generating $YOUPI_DIR/.env with fresh keys (values are not printed)..."
         if [ "$DRY_RUN" -eq 0 ]; then
-            local master jwt webhook
+            local master jwt webhook admin_token
             master=$(openssl rand -hex 32)
             jwt=$(openssl rand -base64 24)
             webhook=$(openssl rand -hex 32)
+            admin_token=$(openssl rand -hex 32)
             ( umask 077; cat > "$YOUPI_DIR/.env" <<EOF
 NODE_ENV=production
 CONTROL_CENTER_PORT=8090
@@ -118,6 +121,8 @@ SQLITE_DB_PATH=./data/youpi_pg.sqlite
 # Security & Secrets
 ENCRYPTION_MASTER_KEY=${master}
 JWT_SECRET=${jwt}
+# Bearer token for the youpi-pg admin API (used by './setup_pi.sh upi' and doctor)
+ADMIN_API_TOKEN=${admin_token}
 
 # Timers (5-min active slot, 30s verification)
 PAYMENT_ACTIVE_WINDOW_MS=300000
@@ -137,6 +142,7 @@ EOF
         echo "  \$ (cd $YOUPI_DIR && npm run db:setup)"
         [ "$DRY_RUN" -eq 1 ] || (cd "$YOUPI_DIR" && npm run db:setup) || true
         echo "  ℹ️  Run './setup_pi.sh env' to copy the webhook secret into the backend .env."
+        echo "  ⚠️  The receiving UPI ID is a demo placeholder until you run './setup_pi.sh upi'."
     fi
     run sudo chown -R "$PI_USER:$PI_USER" "$YOUPI_DIR"
 }
@@ -266,6 +272,38 @@ step_tunnel() {
     echo "  ℹ️  Watch for the URL: journalctl -u sync-quick-tunnel -f"
 }
 
+step_upi() {
+    # Usage: UPI_ID=name@bank PAYEE_NAME="NAME AS IN BANK" ./setup_pi.sh upi   (or answer the prompts)
+    local env_file="$YOUPI_DIR/.env"
+    echo "🏦 Setting the UPI ID that customers pay to..."
+    [ -f "$env_file" ] || { echo "  ❌ $env_file missing; run the 'youpi' step first"; return 1; }
+
+    if [ -z "$(env_get "$env_file" ADMIN_API_TOKEN || true)" ]; then
+        echo "  \$ (append) ADMIN_API_TOKEN to $env_file, then restart youpi-pg"
+        if [ "$DRY_RUN" -eq 0 ]; then
+            printf 'ADMIN_API_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$env_file"
+            sudo systemctl restart youpi-pg.service
+            sleep 5
+        fi
+    fi
+
+    local upi="${UPI_ID:-}" payee="${PAYEE_NAME:-}"
+    [ -n "$upi" ] || read -r -p "  UPI ID (e.g. 9876543210@ybl): " upi
+    [ -n "$payee" ] || read -r -p "  Payee name exactly as your bank shows it: " payee
+    [ -n "$upi" ] && [ -n "$payee" ] || { echo "  ❌ UPI ID and payee name are both required"; return 1; }
+
+    echo "  \$ POST /api/v1/admin/upi-settings  upiId=$upi payeeName=$payee"
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local body token
+    token=$(env_get "$env_file" ADMIN_API_TOKEN)
+    body=$(jq -n --arg u "$upi" --arg p "$payee" '{upiId: $u, payeeName: $p}')
+    # Token passed on stdin as a header so it never shows up in `ps`
+    printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 10 -H @- \
+        -H 'Content-Type: application/json' -d "$body" \
+        "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/upi-settings" | jq .
+    echo "  ℹ️  Verify with: ./doctor.sh upi"
+}
+
 # ---- argument parsing -------------------------------------------------------
 STEPS=()
 [ $# -eq 0 ] && { usage; exit 0; }
@@ -274,7 +312,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --all) STEPS=("${STEPS_ALL[@]}") ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx|tunnel) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift
