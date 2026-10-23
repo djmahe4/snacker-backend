@@ -287,6 +287,34 @@ section_upi() {
         "YOUPI Demo Store"|"") warn "payee name is '$payee'; set your bank-registered name"; hint "./setup_pi.sh upi" ;;
         *) ok "payee name: $payee (should match the name your bank shows for this UPI ID)" ;;
     esac
+
+    # Webhook target + secret live in youpi's merchant record (DB), not in .env
+    local ms want_url wh_url wh_secret be_secret mid
+    ms=$(printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 5 -H @- \
+        "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/merchant-settings" || true)
+    if ! printf '%s' "$ms" | jq -e '.merchantId' >/dev/null 2>&1; then
+        bad "could not read youpi-pg merchant settings"
+        return
+    fi
+    mid=$(printf '%s' "$ms" | jq -r '.merchantId')
+    wh_url=$(printf '%s' "$ms" | jq -r '.webhookUrl // ""')
+    wh_secret=$(printf '%s' "$ms" | jq -r '.webhookSecret // ""')
+    want_url="http://127.0.0.1:${BACKEND_PORT}/api/youpi-webhook"
+    if [ "$wh_url" = "$want_url" ] || [ "$wh_url" = "http://localhost:${BACKEND_PORT}/api/youpi-webhook" ]; then
+        ok "merchant webhook -> $wh_url"
+    else
+        bad "merchant webhook is '$wh_url', expected $want_url: wallet credits will not arrive"
+        hint "./setup_pi.sh merchant"
+    fi
+    be_secret=$(env_get "$BACKEND_DIR/.env" YOUPI_WEBHOOK_SECRET || true)
+    if [ -n "$be_secret" ] && [ "$wh_secret" = "$be_secret" ]; then
+        ok "merchant webhook secret matches backend (fingerprint $(fingerprint "$be_secret"))"
+    else
+        bad "merchant webhook secret differs from backend YOUPI_WEBHOOK_SECRET: backend will reject payment webhooks"
+        hint "./setup_pi.sh merchant"
+    fi
+    ok "merchant ID: $mid"
+    hint "Vercel YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID must equal this (else 400 'Merchant not found')"
 }
 
 SECTIONS=("$@")

@@ -5,7 +5,7 @@ const YOUPI_GATEWAY_URL = (
   (process.env.YOUPI_PORT ? `http://localhost:${process.env.YOUPI_PORT}` : "http://localhost:5000")
 ).replace(/\/$/, "");
 
-const MERCHANT_ID = process.env.YOUPI_MERCHANT_ID || "snacker-merchant-01";
+const MERCHANT_ID = process.env.YOUPI_MERCHANT_ID || "00000000-0000-0000-0000-000000000001";
 
 /**
  * Initiates dynamic UPI payment with YouPI-PG Gateway.

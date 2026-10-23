@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi)
+STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi merchant)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -48,6 +48,8 @@ Steps:
             Firestore and youpi-pg BASE_CHECKOUT_URL on every start
   upi       set the UPI ID + payee name customers pay to (REQUIRED: default is a demo
             placeholder). UPI_ID=... PAYEE_NAME=... or answer the prompts
+  merchant  point youpi-pg's payment webhook at the backend with the backend's secret
+            (stored in youpi's DB, not .env); prints the merchant ID for Vercel
 
 Config: $PI_CONF_LOADED
 EOF
@@ -304,6 +306,37 @@ step_upi() {
     echo "  ℹ️  Verify with: ./doctor.sh upi"
 }
 
+# Call the youpi-pg admin API. Token goes via stdin as a header so it never shows in `ps`.
+youpi_admin() {
+    local method="$1" path="$2" body="${3:-}" token
+    token=$(env_get "$YOUPI_DIR/.env" ADMIN_API_TOKEN || true)
+    [ -n "$token" ] || { echo "  ❌ no ADMIN_API_TOKEN in $YOUPI_DIR/.env; run './setup_pi.sh upi' first" >&2; return 1; }
+    if [ -n "$body" ]; then
+        printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 10 -X "$method" -H @- \
+            -H 'Content-Type: application/json' -d "$body" "http://127.0.0.1:${YOUPI_API_PORT}${path}"
+    else
+        printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 10 -X "$method" -H @- \
+            "http://127.0.0.1:${YOUPI_API_PORT}${path}"
+    fi
+}
+
+step_merchant() {
+    # youpi-pg delivers payment webhooks using the merchant record in its DB, NOT .env.
+    # Its seed points at http://localhost:5000/api/webhook with a random secret, so wallet
+    # credits would never land. Point it at our backend with the backend's secret.
+    local url="http://127.0.0.1:${BACKEND_PORT}/api/youpi-webhook" secret body mid
+    echo "🔗 Pointing youpi-pg payment webhooks at the Snacker backend..."
+    secret=$(env_get "$BACKEND_DIR/.env" YOUPI_WEBHOOK_SECRET || true)
+    [ -n "$secret" ] || { echo "  ❌ YOUPI_WEBHOOK_SECRET missing in $BACKEND_DIR/.env; run the 'env' step first"; return 1; }
+    echo "  \$ POST /api/v1/admin/merchant-settings webhookUrl=$url webhookSecret=(backend secret, fingerprint $(fingerprint "$secret"))"
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    body=$(jq -n --arg u "$url" --arg s "$secret" '{webhookUrl: $u, webhookSecret: $s}')
+    youpi_admin POST /api/v1/admin/merchant-settings "$body" | jq '{merchantId, webhookUrl, error}'
+    mid=$(youpi_admin GET /api/v1/admin/merchant-settings | jq -r .merchantId)
+    echo "  ℹ️  In Vercel set YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID to: $mid"
+    echo "     (any other value makes /api/v1/payments answer 400 'Merchant not found or not configured')"
+}
+
 # ---- argument parsing -------------------------------------------------------
 STEPS=()
 [ $# -eq 0 ] && { usage; exit 0; }
@@ -312,7 +345,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --all) STEPS=("${STEPS_ALL[@]}") ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi|merchant) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift

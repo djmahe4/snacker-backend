@@ -327,9 +327,12 @@ chmod +x setup_pi.sh doctor.sh
 ./setup_pi.sh nginx               # installs hardware/pi/nginx/$NGINX_SITE.conf (snacker-quick)
 ./setup_pi.sh tunnel              # cloudflared + URL sync to Firestore and youpi-pg checkout links
 ./setup_pi.sh upi                 # REQUIRED: the UPI ID + payee name customers pay to
+./setup_pi.sh merchant            # REQUIRED: youpi-pg webhook -> backend, prints merchant ID for Vercel
 ```
 
 > **Set your UPI ID.** youpi-pg starts with a demo receiving account (`merchant@upi`, payee "YOUPI Demo Store"). Until you replace it, customers are shown a UPI ID that is not yours. Run `./setup_pi.sh upi`, or non-interactively `UPI_ID=9876543210@ybl PAYEE_NAME="NAME AS IN BANK" ./setup_pi.sh upi`. Use the payee name exactly as your bank shows it for that UPI ID: payments route by UPI ID alone, but UPI apps show the bank's registered name next to it and a mismatch can make customers hesitate. Re-run the step any time to change either value; no restart is needed. `./doctor.sh upi` shows the active one.
+
+> **Point payment webhooks at the backend.** youpi-pg sends payment webhooks using the merchant record in its database, not `MERCHANT_WEBHOOK_URL`/`MERCHANT_WEBHOOK_SECRET` in its `.env`. Its seed targets `http://localhost:5000/api/webhook` with a random secret, so wallet credits never arrive. `./setup_pi.sh merchant` sets the URL to `http://127.0.0.1:<BACKEND_PORT>/api/youpi-webhook` and the secret to the backend's `YOUPI_WEBHOOK_SECRET`, then prints the merchant ID (`00000000-0000-0000-0000-000000000001` on a fresh install). Set **both** `YOUPI_MERCHANT_ID` and `NEXT_PUBLIC_YOUPI_MERCHANT_ID` in Vercel to that value and redeploy; any other value makes checkout fail with `400 Merchant not found or not configured`.
 
 `./setup_pi.sh --all` runs everything in that order. Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
 

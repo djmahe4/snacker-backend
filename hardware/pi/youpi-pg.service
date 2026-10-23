@@ -24,6 +24,9 @@ Environment=YOUPI_ALLOW_LOCALHOST_MODE=true
 Environment=YOUPI_MODE=localhost
 # youpi's demo store defaults to :5000, which is the Snacker backend. Move it off.
 Environment=COIN_STORE_PORT=5010
+# Payment webhooks go to the Snacker backend on this Pi (127.0.0.1:5000), which youpi's
+# SSRF guard blocks unless private targets are allowed.
+Environment=YOUPI_ALLOW_PRIVATE_WEBHOOKS=true
 
 # Output logs to systemd journal
 StandardOutput=journal
