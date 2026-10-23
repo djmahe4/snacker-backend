@@ -10,6 +10,8 @@ WorkingDirectory=/home/pi/snacker
 ExecStart=/home/pi/snacker/venv/bin/python3 /home/pi/snacker/hardware/pi/vending_controller.py
 Restart=always
 RestartSec=3
+# Rewritten by setup_pi.sh from SERVICE_ACCOUNT_PATH in pi.conf
+Environment=FIREBASE_SERVICE_ACCOUNT_PATH=/home/pi/snacker-backend/serviceAccountKey.json
 
 # Output logs to systemd journal
 StandardOutput=journal

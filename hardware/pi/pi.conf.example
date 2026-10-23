@@ -5,12 +5,15 @@
 #  Read by setup_pi.sh and doctor.sh. Holds paths and ports only: NO secrets.
 # =============================================================================
 
-# Linux user that owns the checkouts and runs the services
-PI_USER=pi
+# Linux user that owns the checkouts and runs the services.
+# Default: the user running setup_pi.sh (works even under sudo). Recent Raspberry Pi OS
+# images have NO 'pi' user, so only hardcode a name here if it really exists.
+PI_USER=${SUDO_USER:-$(id -un)}
 
-# Where this repo (snacker-backend) and youpi-pg are cloned
-BACKEND_DIR=/home/pi/snacker-backend
-YOUPI_DIR=/home/pi/youpi-pg
+# Where this repo (snacker-backend) and youpi-pg are cloned.
+# Default: wherever this checkout lives, and youpi-pg next to it.
+BACKEND_DIR=$(cd "$PI_SCRIPT_DIR/../.." && pwd)
+YOUPI_DIR=$(dirname "$BACKEND_DIR")/youpi-pg
 
 # Nginx site. The frontend is on Vercel, so use the Quick Tunnel config.
 #   snacker-quick -> hardware/pi/nginx/snacker-quick.conf
@@ -24,4 +27,4 @@ YOUPI_ADMIN_PORT=6001    # YouPI-PG merchant admin
 NGINX_PORT=80
 
 # Firebase Admin service account used by the backend and vending daemon
-SERVICE_ACCOUNT_PATH=/home/pi/snacker-backend/serviceAccountKey.json
+SERVICE_ACCOUNT_PATH=$BACKEND_DIR/serviceAccountKey.json

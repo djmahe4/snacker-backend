@@ -15,6 +15,11 @@ load_pi_conf() {
         . "$PI_SCRIPT_DIR/pi.conf.example"
         PI_CONF_LOADED="$PI_SCRIPT_DIR/pi.conf.example (defaults; copy to pi.conf to customise)"
     fi
+    if ! id "$PI_USER" >/dev/null 2>&1; then
+        echo "❌ PI_USER '$PI_USER' does not exist on this system (from $PI_CONF_LOADED)." >&2
+        echo "   Set PI_USER to your login user (see: whoami) in $PI_SCRIPT_DIR/pi.conf" >&2
+        exit 1
+    fi
 }
 
 # Read KEY from a dotenv file without sourcing it (never executes the file).
@@ -33,7 +38,7 @@ fingerprint() {
 
 # Render a systemd unit template with the configured user and paths
 render_unit() {
-    sed -e "s#/home/pi/snacker-backend#${BACKEND_DIR}#g" \
+    sed -e "s#^Environment=FIREBASE_SERVICE_ACCOUNT_PATH=.*#Environment=FIREBASE_SERVICE_ACCOUNT_PATH=${SERVICE_ACCOUNT_PATH}#"         -e "s#/home/pi/snacker-backend#${BACKEND_DIR}#g" \
         -e "s#/home/pi/snacker#${BACKEND_DIR}#g" \
         -e "s#/home/pi/youpi-pg#${YOUPI_DIR}#g" \
         -e "s#^User=pi\$#User=${PI_USER}#" \
