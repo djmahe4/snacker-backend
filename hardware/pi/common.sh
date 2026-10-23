@@ -44,5 +44,6 @@ render_unit() {
         -e "s#^User=pi\$#User=${PI_USER}#" \
         -e "s#^Group=pi\$#Group=${PI_USER}#" \
         -e "s#^Environment=PORT=5000\$#Environment=PORT=${BACKEND_PORT}#" \
+        -e "s#^Environment=NGINX_PORT=80\$#Environment=NGINX_PORT=${NGINX_PORT}#" \
         "$1"
 }

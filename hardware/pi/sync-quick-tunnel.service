@@ -1,0 +1,24 @@
+[Unit]
+Description=Snacker Cloudflare Quick Tunnel + Firestore/youpi-pg URL sync
+After=network-online.target nginx.service youpi-pg.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/snacker-backend
+ExecStart=/home/pi/snacker-backend/venv/bin/python3 -u /home/pi/snacker-backend/hardware/pi/sync_quick_tunnel.py
+Restart=always
+RestartSec=10
+# Rewritten by setup_pi.sh from pi.conf
+Environment=FIREBASE_SERVICE_ACCOUNT_PATH=/home/pi/snacker-backend/serviceAccountKey.json
+Environment=YOUPI_ENV_PATH=/home/pi/youpi-pg/.env
+Environment=NGINX_PORT=80
+
+# Output logs to systemd journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

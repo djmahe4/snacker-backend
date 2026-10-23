@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi backend venv env services nginx)
+STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -44,6 +44,8 @@ Steps:
   env       create backend .env (mode 600) and sync the webhook secret from youpi-pg
   services  install systemd units rendered with pi.conf paths, enable + restart
   nginx     install hardware/pi/nginx/$NGINX_SITE.conf and reload nginx
+  tunnel    cloudflared + sync-quick-tunnel.service: publishes the tunnel URL to
+            Firestore and youpi-pg BASE_CHECKOUT_URL on every start
 
 Config: $PI_CONF_LOADED
 EOF
@@ -229,6 +231,41 @@ step_nginx() {
     run sudo systemctl reload nginx
 }
 
+step_tunnel() {
+    echo "☁️  Setting up the Cloudflare Quick Tunnel sync..."
+    if command -v cloudflared >/dev/null 2>&1; then
+        echo "  ✅ $(cloudflared --version 2>&1 | head -n 1)"
+    else
+        local arch deb
+        arch=$(dpkg --print-architecture)
+        deb=$(mktemp --suffix=.deb)
+        run curl -fsSL -o "$deb" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb"
+        run sudo dpkg -i "$deb"
+        rm -f "$deb"
+    fi
+
+    # Let the tunnel service restart youpi-pg (to apply a new checkout URL) and nothing else
+    local rule="$PI_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart youpi-pg.service"
+    echo "  \$ (write) /etc/sudoers.d/snacker-tunnel: $rule"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        local tmp
+        tmp=$(mktemp)
+        printf '%s\n' "$rule" > "$tmp"
+        if sudo visudo -cf "$tmp" >/dev/null; then
+            sudo install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/snacker-tunnel
+        else
+            echo "  ❌ sudoers rule failed validation; not installed"
+        fi
+        rm -f "$tmp"
+    fi
+
+    install_unit sync-quick-tunnel.service
+    run sudo systemctl daemon-reload
+    run sudo systemctl enable sync-quick-tunnel.service
+    run sudo systemctl restart sync-quick-tunnel.service
+    echo "  ℹ️  Watch for the URL: journalctl -u sync-quick-tunnel -f"
+}
+
 # ---- argument parsing -------------------------------------------------------
 STEPS=()
 [ $# -eq 0 ] && { usage; exit 0; }
@@ -237,7 +274,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --all) STEPS=("${STEPS_ALL[@]}") ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift
