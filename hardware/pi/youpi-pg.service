@@ -17,6 +17,13 @@ Environment=PAYMENT_API_PORT=6100
 Environment=CHECKOUT_PORTAL_PORT=7000
 Environment=MERCHANT_ADMIN_PORT=6001
 Environment=CONTROL_CENTER_PORT=8090
+# Plan B (Quick Tunnel): one random *.trycloudflare.com host, no subdomains, so youpi's
+# production mode (pay.<domain>, pay-api.<domain>, ...) cannot work. Run in localhost
+# mode; nginx on :80 multiplexes /checkout, /api/v1 and /youpi.js on the single tunnel host.
+Environment=YOUPI_ALLOW_LOCALHOST_MODE=true
+Environment=YOUPI_MODE=localhost
+# youpi's demo store defaults to :5000, which is the Snacker backend. Move it off.
+Environment=COIN_STORE_PORT=5010
 
 # Output logs to systemd journal
 StandardOutput=journal
