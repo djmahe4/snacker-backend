@@ -354,7 +354,7 @@ youpi-pg lets one customer pay a given UPI ID at a time, so an alert for the rig
 - Use a **UPI ID linked to a bank account** (from your bank's app, GPay, PhonePe or BHIM). A **MobiKwik wallet** UPI ID (`@mbk`) does not work: money lands in the wallet, no bank SMS is sent, and MobiKwik's "Money credited via Pocket UPI" notification has no UPI reference.
 - Use a **spare phone** with the bank's SIM. The observer reads every notification and SMS on it, OTPs included.
 
-**Observer app (Android).** We use our fork [djmahe4/YouPI-PG](https://github.com/djmahe4/YouPI-PG) (branch `feat/observer-gateway-discovery`), which adds *gateway discovery*: on a Cloudflare Quick Tunnel the URL changes on every restart, and the fork re-reads the live URL from Firestore `config/gateway` (written by `sync_quick_tunnel.py`) instead of posting to the dead one. Build it with discovery pointed at your Firebase project:
+**Observer app (Android).** We use our fork [djmahe4/YouPI-PG](https://github.com/djmahe4/YouPI-PG) (`main`), which adds *gateway discovery*: on a Cloudflare Quick Tunnel the URL changes on every restart, and the fork re-reads the live URL from Firestore `config/gateway` (written by `sync_quick_tunnel.py`) instead of posting to the dead one. Build it with discovery pointed at your Firebase project:
 
 ```bash
 cd YouPI-PG/apps/android-observer-app

@@ -351,7 +351,7 @@ step_observer() {
     tunnel=$(journalctl -u sync-quick-tunnel -n 300 --no-pager 2>/dev/null \
         | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -n 1 || true)
 
-    echo "  1. Build the observer APK (fork djmahe4/YouPI-PG, branch feat/observer-gateway-discovery):"
+    echo "  1. Build the observer APK (fork djmahe4/YouPI-PG, main):"
     if [ -n "$project" ]; then
         echo "     ./gradlew assembleDebug -PgatewayDiscoveryUrl='https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/config/gateway'"
     else
