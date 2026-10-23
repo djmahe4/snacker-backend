@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi venv env services nginx)
+STEPS_ALL=(packages udev youpi backend venv env services nginx)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -39,6 +39,7 @@ Steps:
   packages  apt packages and Node.js 24
   udev      scanner/serial udev rules, add $PI_USER to input,dialout
   youpi     clone/update youpi-pg, npm install, first-time .env + SQLite
+  backend   npm install for this repo's Express API (snacker-backend.service)
   venv      Python venv + requirements for the vending daemon
   env       create backend .env (mode 600) and sync the webhook secret from youpi-pg
   services  install systemd units rendered with pi.conf paths, enable + restart
@@ -138,6 +139,16 @@ EOF
     run sudo chown -R "$PI_USER:$PI_USER" "$YOUPI_DIR"
 }
 
+step_backend() {
+    echo "🟢 Installing backend Node dependencies in $BACKEND_DIR..."
+    if [ -f "$BACKEND_DIR/package-lock.json" ]; then
+        run npm --prefix "$BACKEND_DIR" ci --omit=dev
+    else
+        run npm --prefix "$BACKEND_DIR" install --omit=dev
+    fi
+    run sudo chown -R "$PI_USER:$PI_USER" "$BACKEND_DIR/node_modules"
+}
+
 step_venv() {
     echo "🐍 Setting up Python venv in $BACKEND_DIR/venv..."
     [ -d "$BACKEND_DIR/venv" ] || run python3 -m venv "$BACKEND_DIR/venv"
@@ -226,7 +237,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --all) STEPS=("${STEPS_ALL[@]}") ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|venv|env|services|nginx) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift
