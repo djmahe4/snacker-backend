@@ -7,6 +7,22 @@ const YOUPI_GATEWAY_URL = (
 
 const MERCHANT_ID = process.env.YOUPI_MERCHANT_ID || "00000000-0000-0000-0000-000000000001";
 
+// YouPI-PG in localhost mode always builds checkout links on http://localhost:7000, which a
+// phone cannot open. Swap the origin for the public gateway URL (nginx routes /checkout/).
+function toPublicCheckoutUrl(checkoutUrl, gatewayUrl) {
+  if (!checkoutUrl || !/^https?:\/\//.test(gatewayUrl)) return checkoutUrl;
+  try {
+    const local = ["localhost", "127.0.0.1", "0.0.0.0"];
+    const link = new URL(checkoutUrl);
+    if (!local.includes(link.hostname)) return checkoutUrl;
+    const publicBase = new URL(gatewayUrl);
+    if (local.includes(publicBase.hostname)) return checkoutUrl;
+    return `${publicBase.origin}${link.pathname}${link.search}`;
+  } catch {
+    return checkoutUrl;
+  }
+}
+
 /**
  * Initiates dynamic UPI payment with YouPI-PG Gateway.
  */
@@ -23,6 +39,7 @@ export async function handleCreatePaymentSession(req, res) {
   try {
     const gatewayRes = await fetch(`${YOUPI_GATEWAY_URL}/api/v1/payments`, {
       method: "POST",
+      signal: AbortSignal.timeout(8000),
       headers: {
         "Content-Type": "application/json",
         "X-Merchant-Id": MERCHANT_ID,
@@ -46,15 +63,12 @@ export async function handleCreatePaymentSession(req, res) {
     return res.status(200).json({
       success: true,
       orderId: data.orderId || orderId,
-      checkoutUrl: data.checkoutUrl,
+      checkoutUrl: toPublicCheckoutUrl(data.checkoutUrl, YOUPI_GATEWAY_URL),
     });
   } catch (error) {
-    console.warn("[PAYMENT GATEWAY NOTICE] Gateway unreachable, providing offline/mock fallback:", error.message);
-    return res.status(200).json({
-      success: true,
-      orderId,
-      checkoutUrl: `/checkout/${orderId}?amount=${amount}`,
-      note: "Offline/mock gateway fallback",
+    console.error("YouPI-PG gateway unreachable:", YOUPI_GATEWAY_URL, error.message);
+    return res.status(503).json({
+      error: "Payment gateway is offline. Please try again in a minute.",
     });
   }
 }

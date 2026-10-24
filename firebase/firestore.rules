@@ -9,18 +9,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // 2. Users: clients can read user profile and wallet points.
-    // Client writes are blocked to prevent direct wallet manipulation from browser DevTools.
+    // 2. Users: wallet balances and profiles are private. Auth is Clerk (not Firebase Auth), so
+    // clients have no identity Firestore can check; the Next.js server routes (/api/wallet) read
+    // with the Admin SDK on the signed-in user's behalf.
     match /users/{userId} {
-      allow read: if true;
-      allow write: if false;
+      allow read, write: if false;
     }
 
-    // 3. Orders: users can view order history and real-time status.
-    // Client writes are blocked (only server routes with Admin SDK generate and verify orders).
+    // 3. Orders: order IDs double as the vending QR codes, so they must never be listable or
+    // readable by clients. The orders page reads through the Admin SDK for the signed-in user only.
     match /orders/{orderId} {
-      allow read: if true;
-      allow write: if false;
+      allow read, write: if false;
     }
 
     // 4. Payments: strictly private to server and webhook processing.
