@@ -104,8 +104,10 @@ def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
     Sends DISPENSE:<slot>:<count> and waits for one result line per bag:
       - 'DONE:<SLOT>:TIMED' / 'DONE:<SLOT>:VERIFIED' -> bag dispensed
       - 'WARN:<SLOT>:...'                            -> bag failed (jam / abort / skipped)
-    Returns SUCCESS only if every bag succeeded, otherwise JAMMED / TIMEOUT / ERROR.
+    Returns (status, delivered): status is SUCCESS only if every bag succeeded, otherwise
+    JAMMED / TIMEOUT / ERROR; delivered is how many bags were confirmed before it stopped.
     """
+    delivered = 0
     try:
         ser.reset_input_buffer()
         cmd = f"DISPENSE:{slot}:{count}\n"
@@ -114,7 +116,6 @@ def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
 
         # Each bag: motor run + 1.2s cooldown, plus a safety margin
         timeout = count * (run_ms / 1000.0 + 1.5) + 5
-        results = 0
         start = time.time()
         while time.time() - start < timeout:
             if ser.in_waiting > 0:
@@ -123,53 +124,63 @@ def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
                     continue
                 print(f"[ARDUINO <-] {line}")
                 if line.startswith("ERROR:"):
-                    return "ERROR"
+                    return "ERROR", delivered
                 if line.startswith("WARN:"):
-                    return "JAMMED"
+                    return "JAMMED", delivered
                 if line.startswith("DONE:"):
-                    results += 1
-                    if results >= count:
-                        return "SUCCESS"
+                    delivered += 1
+                    if delivered >= count:
+                        return "SUCCESS", delivered
             else:
                 time.sleep(0.05)
-        return "TIMEOUT"
+        return "TIMEOUT", delivered
     except Exception as e:
         print(f"[SERIAL] Communication error: {e}")
-        return "ERROR"
+        return "ERROR", delivered
 
-def refund_credits(user_id, amount, order_id, reason):
-    """Refunds credits back to student's wallet if a slot jams."""
-    try:
-        user_ref = db.collection("users").document(user_id)
-        if user_ref.get().exists:
-            user_ref.update({"credit": firestore.Increment(amount)})  # atomic, no lost updates
-            print(f"[REFUND] Refunded {amount} pts to user '{user_id}' (Reason: {reason})")
+class ArduinoLink:
+    """Owns the serial connection and reopens it if the cable drops or the board resets."""
 
-        # Log incident in Firestore errors collection for inventory audit
-        db.collection("errors").document(f"jam_{order_id}_{int(time.time())}").set({
-            "orderId": order_id,
-            "userId": user_id,
-            "refundedAmount": amount,
-            "reason": reason,
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "context": "hardware_dispenser",
-        })
-    except Exception as e:
-        print(f"[ERROR] Refund transaction failed: {e}")
+    def __init__(self):
+        self.ser = None
 
-def restore_stock(items):
-    """Returns reserved stock for items that were never delivered."""
-    for item in items:
-        product_id = item.get("productId")
-        if not product_id:
-            continue
+    def _open(self):
+        port = find_arduino_port()
+        ser = serial.Serial(port, SERIAL_BAUD, timeout=2)
+        time.sleep(2)  # Wait for Arduino bootloader reset
+        ser.reset_input_buffer()
+        ser.write(b"STATUS\n")
+        print(f"[SERIAL] Connected to Arduino Mega on {port}")
+        return ser
+
+    def _alive(self):
+        if self.ser is None:
+            return False
         try:
-            db.collection("products").document(product_id).update(
-                {"stock": firestore.Increment(int(item.get("count", 1)))}
-            )
-            print(f"[STOCK] Restored {item.get('count', 1)} unit(s) of '{product_id}'")
+            _ = self.ser.in_waiting  # raises OSError/SerialException once the device is gone
+            return self.ser.is_open
+        except Exception:
+            return False
+
+    def get(self):
+        """Returns a live serial port, reconnecting once if needed; None if unavailable."""
+        if self._alive():
+            return self.ser
+        self.drop()
+        try:
+            self.ser = self._open()
         except Exception as e:
-            print(f"[ERROR] Could not restore stock for '{product_id}': {e}")
+            print(f"[SERIAL] Arduino unavailable: {e}")
+            self.ser = None
+        return self.ser
+
+    def drop(self):
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
 
 @firestore.transactional
 def _lock_order(transaction, order_ref):
@@ -188,10 +199,99 @@ def _lock_order(transaction, order_ref):
     })
     return data
 
-def process_order(order_id, ser):
+def remaining_items(products, delivered_counts):
+    """Items (with count reduced by what already dropped) that are still owed to the customer."""
+    owed = []
+    for i, item in enumerate(products):
+        done = delivered_counts[i] if i < len(delivered_counts) else 0
+        left = int(item.get("count", 1)) - int(done)
+        if left > 0:
+            owed.append({**item, "count": left})
+    return owed
+
+def settle_failed_order(order_ref, order_id, order_data, delivered_counts, failure_reason, ambiguous=False):
+    """
+    Marks the order jammed, refunds what was not delivered and puts that stock back, all in ONE
+    atomic batch: either the customer is made whole and the order closes, or nothing changes and
+    the order stays 'dispensing' so the next attempt (or startup recovery) settles it again.
+    """
+    user_id = order_data.get("userId", "")
+    products = order_data.get("products") or []
+
+    # Malformed counts/prices must never stop an order from being closed and refunded.
+    try:
+        undelivered = remaining_items(products, delivered_counts or [])
+        owed = sum(float(i["price"]) * int(i.get("count", 1)) for i in undelivered)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        undelivered = []  # cannot tell which lines are owed, so stock is left for a manual check
+        try:
+            owed = float(order_data.get("amount", 0)) if not any(delivered_counts or []) else 0
+        except (TypeError, ValueError):
+            owed = 0
+        failure_reason += " (order data malformed; refunded by order total, check stock)"
+        ambiguous = True
+
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            batch = db.batch()
+            batch.update(order_ref, {
+                "status": "jammed",
+                "error": failure_reason,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            })
+
+            refunded = 0
+            if user_id and owed > 0:
+                user_ref = db.collection("users").document(user_id)
+                if user_ref.get().exists:
+                    batch.update(user_ref, {"credit": firestore.Increment(owed)})
+                    refunded = owed
+                else:
+                    print(f"[REFUND] User '{user_id}' not found; cannot refund {owed} pts (logged for audit)")
+
+            for item in undelivered:
+                product_id = item.get("productId")
+                if not product_id:
+                    continue
+                product_ref = db.collection("products").document(product_id)
+                if product_ref.get().exists:
+                    batch.update(product_ref, {"stock": firestore.Increment(int(item.get("count", 1)))})
+
+            # Incident log for inventory audit, committed together with the refund
+            batch.set(db.collection("errors").document(f"jam_{order_id}_{int(time.time())}"), {
+                "orderId": order_id,
+                "userId": user_id,
+                "refundedAmount": refunded,
+                "owedAmount": owed,
+                "reason": failure_reason,
+                "ambiguous": ambiguous,  # True when a bag may have dropped without a DONE (needs stock check)
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "context": "hardware_dispenser",
+            })
+            batch.commit()
+            print(f"[REFUND] Settled order '{order_id}': refunded {refunded} pts to '{user_id}' ({failure_reason})")
+            return
+        except Exception as e:
+            last_error = e
+            print(f"[ERROR] Settlement attempt {attempt}/3 failed for '{order_id}': {e}")
+            time.sleep(2 * attempt)
+
+    # Nothing was written, so the order is still 'dispensing' and startup recovery will retry it.
+    raise RuntimeError(f"Could not settle order '{order_id}': {last_error}")
+
+def process_order(order_id, link):
     print("\n" + "=" * 60)
     print(f"[SCAN] Scanned Order ID: {order_id}")
     order_ref = db.collection("orders").document(order_id)
+
+    # Make sure the machine can actually vend BEFORE locking the order; otherwise leave it
+    # pending so the customer can simply scan again once the Arduino is back.
+    ser = link.get()
+    if ser is None:
+        print("[REJECT] Arduino not connected; order left pending, please scan again shortly.")
+        print("=" * 60 + "\n")
+        return
 
     try:
         order_data = _lock_order(db.transaction(), order_ref)
@@ -203,16 +303,15 @@ def process_order(order_id, ser):
         print("=" * 60 + "\n")
         return
 
-    user_id = order_data.get("userId", "")
-    amount = order_data.get("amount", 0)
     products = order_data.get("products", [])
+    delivered_counts = [0] * len(products)  # bags confirmed dropped, per product line
 
     all_vended = True
     failure_reason = ""
-    undelivered = list(products)  # items still owed to the customer; shrinks as each one vends
+    ambiguous = False
 
     try:
-        for item in products:
+        for idx, item in enumerate(products):
             slot = str(item.get("position", "")).upper()
             count = int(item.get("count", 1))
             name = item.get("name", "Chips")
@@ -221,14 +320,24 @@ def process_order(order_id, ser):
                 break
 
             print(f"[DISPATCH] Vending {count}x '{name}' from Slot [{slot}]...")
-            result = send_arduino_dispense(ser, slot, count)
+            result, delivered = send_arduino_dispense(ser, slot, count)
+            delivered_counts[idx] = delivered
+
+            # Persist progress so a crash/power loss can be settled correctly on restart
+            try:
+                order_ref.update({"deliveredCounts": delivered_counts})
+            except Exception as e:
+                print(f"[WARN] Could not persist vend progress: {e}")
 
             if result == "SUCCESS":
                 print(f"[OK] Slot {slot} dispensed {count} bag(s).")
-                undelivered.remove(item)
             else:
                 all_vended = False
-                failure_reason = f"Slot {slot} status: {result}"
+                failure_reason = f"Slot {slot} status: {result} ({delivered}/{count} bag(s) delivered)"
+                # No result line arrived in time: a bag may have dropped without being counted
+                ambiguous = result == "TIMEOUT"
+                if result in ("ERROR", "TIMEOUT"):
+                    link.drop()  # force a fresh connection on the next scan
                 print(f"[ALERT] {failure_reason}")
                 break
     except Exception as e:
@@ -244,41 +353,45 @@ def process_order(order_id, ser):
             })
             print(f"[COMPLETE] Order '{order_id}' successfully finished!")
         else:
-            order_ref.update({
-                "status": "jammed",
-                "error": failure_reason,
-                "updatedAt": firestore.SERVER_TIMESTAMP
-            })
-            # Refund only what was not delivered, and put that stock back
-            try:
-                owed = sum(float(i["price"]) * int(i.get("count", 1)) for i in undelivered)
-            except (KeyError, TypeError, ValueError):
-                owed = amount  # legacy order without per-item prices: refund in full
-            if user_id and owed > 0:
-                refund_credits(user_id, owed, order_id, failure_reason)
-            restore_stock(undelivered)
+            settle_failed_order(order_ref, order_id, order_data, delivered_counts, failure_reason, ambiguous)
     except Exception as e:
         print(f"[ERROR] Failed to finalize order '{order_id}': {e}")
 
     print("=" * 60 + "\n")
+
+def recover_stuck_orders():
+    """
+    Orders left in 'dispensing' by a crash or power loss are settled on startup: whatever the
+    persisted progress shows as not delivered (including the bag that was mid-drop) is refunded.
+    """
+    try:
+        stuck = list(db.collection("orders").where("status", "==", "dispensing").stream())
+    except Exception as e:
+        print(f"[RECOVERY] Could not query stuck orders: {e}")
+        return
+    for snap in stuck:
+        data = snap.to_dict() or {}
+        print(f"[RECOVERY] Settling order '{snap.id}' left in 'dispensing' by a restart.")
+        try:
+            settle_failed_order(
+                snap.reference, snap.id, data, data.get("deliveredCounts") or [],
+                "Controller restarted mid-vend", ambiguous=True,
+            )
+        except Exception as e:
+            print(f"[RECOVERY] Failed to settle '{snap.id}': {e}")
 
 def main():
     print("=======================================================")
     print("      SNACKER HARDWARE VENDING DAEMON STARTING         ")
     print("=======================================================")
 
-    # 1. Connect to Arduino Mega over Serial
-    ser = None
-    while ser is None:
-        port = find_arduino_port()
-        try:
-            ser = serial.Serial(port, SERIAL_BAUD, timeout=2)
-            time.sleep(2)  # Wait for Arduino bootloader reset
-            ser.write(b"STATUS\n")
-            print(f"[SERIAL] Connected to Arduino Mega on {port}")
-        except Exception as e:
-            print(f"[WAIT] Waiting for Arduino Mega on {port}... ({e})")
-            time.sleep(3)
+    # 1. Connect to Arduino Mega over Serial (reconnected automatically if it drops later)
+    link = ArduinoLink()
+    while link.get() is None:
+        print("[WAIT] Waiting for Arduino Mega...")
+        time.sleep(3)
+
+    recover_stuck_orders()
 
     # 2. Scanner Loop with Hotplug Resilience
     while True:
@@ -311,7 +424,7 @@ def main():
                             order_id = "".join(scanned_chars).strip()
                             scanned_chars = []
                             if len(order_id) >= 6:  # Valid nanoid length
-                                process_order(order_id, ser)
+                                process_order(order_id, link)
                         else:
                             mapping = SCANCODE_MAP.get(data.scancode)
                             if mapping:

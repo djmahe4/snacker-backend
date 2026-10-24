@@ -33,9 +33,14 @@ export async function handleAdminActions(req, res) {
         if (!productId || newStock === undefined) {
           return res.status(400).json({ success: false, error: "Missing productId or newStock" });
         }
+        // NaN or negative stock would defeat the `stock < count` check in /api/create-order
+        const safeStock = Number(newStock);
+        if (!Number.isInteger(safeStock) || safeStock < 0) {
+          return res.status(400).json({ success: false, error: "newStock must be a non-negative integer" });
+        }
 
         await adminDb.collection("products").doc(productId).update({
-          stock: Number(newStock),
+          stock: safeStock,
           updatedAt: FieldValue.serverTimestamp(),
         });
         return res.status(200).json({ success: true, message: `Stock updated for ${productId}` });
