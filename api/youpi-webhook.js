@@ -11,12 +11,10 @@ export async function handleYoupiWebhook(req, res) {
   try {
     const rawBody = req.rawBody || JSON.stringify(req.body);
     const signature = req.headers["x-gateway-signature"] || "";
-    const timestamp = Number(req.headers["x-gateway-timestamp"]);
 
-    // Timestamp is mandatory; stale or missing deliveries are ignored (replay protection)
-    if (!Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 5 * 60 * 1000) {
-      return res.status(200).json({ received: true, note: "Stale delivery ignored" });
-    }
+    // No timestamp-age check: YouPI retries a failed delivery with its original timestamp, and
+    // answering 200 to an "old" one tells it to stop, so the paid user was never credited.
+    // Replays are harmless because payments/{orderId} below makes crediting idempotent.
 
     // Constant-time HMAC-SHA256 signature verification
     const expectedSig = "sha256=" + crypto
