@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi merchant)
+STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi merchant observer)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -50,6 +50,9 @@ Steps:
             placeholder). UPI_ID=... PAYEE_NAME=... or answer the prompts
   merchant  point youpi-pg's payment webhook at the backend with the backend's secret
             (stored in youpi's DB, not .env); prints the merchant ID for Vercel
+  observer  REQUIRED for payments to confirm: prints the APK build command (gateway
+            discovery for this Firebase project), the live tunnel URL and a fresh
+            10-minute enrollment token for pairing the Android observer app
 
 Config: $PI_CONF_LOADED
 EOF
@@ -337,6 +340,38 @@ step_merchant() {
     echo "     (any other value makes /api/v1/payments answer 400 'Merchant not found or not configured')"
 }
 
+step_observer() {
+    # youpi-pg confirms a payment only when an observer reports the bank credit alert.
+    # This step does not touch the phone; it prints what the phone needs.
+    echo "📱 Android payment observer (pairing info)..."
+    local project="" tunnel="" pair
+    if [ -r "$SERVICE_ACCOUNT_PATH" ]; then
+        project=$(jq -r '.project_id // empty' "$SERVICE_ACCOUNT_PATH" 2>/dev/null || true)
+    fi
+    tunnel=$(journalctl -u sync-quick-tunnel -n 300 --no-pager 2>/dev/null \
+        | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -n 1 || true)
+
+    echo "  1. Build the observer APK (fork djmahe4/YouPI-PG, main):"
+    if [ -n "$project" ]; then
+        echo "     ./gradlew assembleDebug -PgatewayDiscoveryUrl='https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/config/gateway'"
+    else
+        echo "     ⚠️  project_id not readable from $SERVICE_ACCOUNT_PATH; use your Firebase project ID in -PgatewayDiscoveryUrl"
+    fi
+    echo "     Firestore rules must allow public read of config/gateway (firebase/firestore.rules)."
+    echo "  2. On the phone: install, grant Notification Listener access, battery = Unrestricted."
+    if [ -n "$tunnel" ]; then
+        echo "  3. Gateway URL to TYPE in the app (do not scan the admin QR): $tunnel"
+    else
+        echo "  3. ⚠️  No tunnel URL in the sync-quick-tunnel log; run './setup_pi.sh tunnel' first."
+    fi
+
+    [ "$DRY_RUN" -eq 1 ] && { echo "  \$ GET /api/v1/admin/sms-gateway/pair-qr (enrollment token)"; return 0; }
+    pair=$(youpi_admin GET /api/v1/admin/sms-gateway/pair-qr) || return 1
+    # The token is a pairing credential: printed once for you to type, never logged elsewhere.
+    echo "  4. Enrollment token (valid 10 minutes): $(printf '%s' "$pair" | jq -r '.enrollmentToken // .token // "unavailable"')"
+    echo "  5. Tap Pair, then verify with: ./doctor.sh upi   (expect 'payment observer connected')"
+}
+
 # ---- argument parsing -------------------------------------------------------
 STEPS=()
 [ $# -eq 0 ] && { usage; exit 0; }
@@ -345,7 +380,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --all) STEPS=("${STEPS_ALL[@]}") ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi|merchant) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi|merchant|observer) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift
