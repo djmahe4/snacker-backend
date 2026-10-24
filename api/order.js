@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { adminDb, FieldValue } from "../firebase/admin.js";
 
 const YOUPI_GATEWAY_URL = (
   process.env.YOUPI_GATEWAY_URL ||
@@ -32,6 +33,22 @@ export async function handleCreatePaymentSession(req, res) {
 
   if (!amount || Number(amount) <= 0) {
     return res.status(400).json({ error: "Invalid recharge amount" });
+  }
+
+  // The webhook credits users/{userId}; make sure it exists before any money moves
+  try {
+    await adminDb.collection("users").doc(userId).create({
+      name: "Student",
+      userId,
+      email: req.userEmail || "",
+      credit: 0,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    if (e?.code !== 6) {
+      console.error("[ORDER] Could not ensure user document:", e.message);
+      return res.status(500).json({ error: "Could not load your wallet. Please try again." });
+    }
   }
 
   const orderId = `WAL-${nanoid(8)}`;

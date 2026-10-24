@@ -51,17 +51,22 @@ export async function handleYoupiWebhook(req, res) {
           }
 
           const userDoc = await transaction.get(userRef);
-          if (!userDoc.exists) {
-            throw new Error(`User document '${userId}' does not exist`);
+          if (userDoc.exists) {
+            const currentCredit = userDoc.data()?.credit || 0;
+            transaction.update(userRef, {
+              credit: currentCredit + amountInINR,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          } else {
+            // Paid before a profile was created: create it with this payment instead of failing
+            transaction.set(userRef, {
+              name: "Student",
+              userId,
+              email: "",
+              credit: amountInINR,
+              createdAt: FieldValue.serverTimestamp(),
+            });
           }
-
-          const currentCredit = userDoc.data()?.credit || 0;
-          const newCredit = currentCredit + amountInINR;
-
-          transaction.update(userRef, {
-            credit: newCredit,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
 
           transaction.set(paymentRef, {
             userId,
