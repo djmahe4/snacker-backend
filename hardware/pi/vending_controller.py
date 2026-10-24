@@ -182,41 +182,6 @@ class ArduinoLink:
                 pass
         self.ser = None
 
-def refund_credits(user_id, amount, order_id, reason, ambiguous=False):
-    """Refunds credits back to student's wallet if a slot jams."""
-    try:
-        user_ref = db.collection("users").document(user_id)
-        if user_ref.get().exists:
-            user_ref.update({"credit": firestore.Increment(amount)})  # atomic, no lost updates
-            print(f"[REFUND] Refunded {amount} pts to user '{user_id}' (Reason: {reason})")
-
-        # Log incident in Firestore errors collection for inventory audit
-        db.collection("errors").document(f"jam_{order_id}_{int(time.time())}").set({
-            "orderId": order_id,
-            "userId": user_id,
-            "refundedAmount": amount,
-            "reason": reason,
-            "ambiguous": ambiguous,  # True when a bag may have dropped without a DONE (needs stock check)
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "context": "hardware_dispenser",
-        })
-    except Exception as e:
-        print(f"[ERROR] Refund transaction failed: {e}")
-
-def restore_stock(items):
-    """Returns reserved stock for items that were never delivered."""
-    for item in items:
-        product_id = item.get("productId")
-        if not product_id:
-            continue
-        try:
-            db.collection("products").document(product_id).update(
-                {"stock": firestore.Increment(int(item.get("count", 1)))}
-            )
-            print(f"[STOCK] Restored {item.get('count', 1)} unit(s) of '{product_id}'")
-        except Exception as e:
-            print(f"[ERROR] Could not restore stock for '{product_id}': {e}")
-
 @firestore.transactional
 def _lock_order(transaction, order_ref):
     """Atomically move pending -> dispensing. Returns order data, or None if not vendable."""
@@ -245,23 +210,75 @@ def remaining_items(products, delivered_counts):
     return owed
 
 def settle_failed_order(order_ref, order_id, order_data, delivered_counts, failure_reason, ambiguous=False):
-    """Marks the order jammed, refunds what was not delivered and puts that stock back."""
+    """
+    Marks the order jammed, refunds what was not delivered and puts that stock back, all in ONE
+    atomic batch: either the customer is made whole and the order closes, or nothing changes and
+    the order stays 'dispensing' so the next attempt (or startup recovery) settles it again.
+    """
     user_id = order_data.get("userId", "")
-    amount = order_data.get("amount", 0)
-    undelivered = remaining_items(order_data.get("products", []), delivered_counts)
+    products = order_data.get("products") or []
 
-    order_ref.update({
-        "status": "jammed",
-        "error": failure_reason,
-        "updatedAt": firestore.SERVER_TIMESTAMP
-    })
+    # Malformed counts/prices must never stop an order from being closed and refunded.
     try:
+        undelivered = remaining_items(products, delivered_counts or [])
         owed = sum(float(i["price"]) * int(i.get("count", 1)) for i in undelivered)
-    except (KeyError, TypeError, ValueError):
-        owed = amount if not any(delivered_counts) else 0  # legacy order: full refund only if nothing dropped
-    if user_id and owed > 0:
-        refund_credits(user_id, owed, order_id, failure_reason, ambiguous)
-    restore_stock(undelivered)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        undelivered = []  # cannot tell which lines are owed, so stock is left for a manual check
+        try:
+            owed = float(order_data.get("amount", 0)) if not any(delivered_counts or []) else 0
+        except (TypeError, ValueError):
+            owed = 0
+        failure_reason += " (order data malformed; refunded by order total, check stock)"
+        ambiguous = True
+
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            batch = db.batch()
+            batch.update(order_ref, {
+                "status": "jammed",
+                "error": failure_reason,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            })
+
+            refunded = 0
+            if user_id and owed > 0:
+                user_ref = db.collection("users").document(user_id)
+                if user_ref.get().exists:
+                    batch.update(user_ref, {"credit": firestore.Increment(owed)})
+                    refunded = owed
+                else:
+                    print(f"[REFUND] User '{user_id}' not found; cannot refund {owed} pts (logged for audit)")
+
+            for item in undelivered:
+                product_id = item.get("productId")
+                if not product_id:
+                    continue
+                product_ref = db.collection("products").document(product_id)
+                if product_ref.get().exists:
+                    batch.update(product_ref, {"stock": firestore.Increment(int(item.get("count", 1)))})
+
+            # Incident log for inventory audit, committed together with the refund
+            batch.set(db.collection("errors").document(f"jam_{order_id}_{int(time.time())}"), {
+                "orderId": order_id,
+                "userId": user_id,
+                "refundedAmount": refunded,
+                "owedAmount": owed,
+                "reason": failure_reason,
+                "ambiguous": ambiguous,  # True when a bag may have dropped without a DONE (needs stock check)
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "context": "hardware_dispenser",
+            })
+            batch.commit()
+            print(f"[REFUND] Settled order '{order_id}': refunded {refunded} pts to '{user_id}' ({failure_reason})")
+            return
+        except Exception as e:
+            last_error = e
+            print(f"[ERROR] Settlement attempt {attempt}/3 failed for '{order_id}': {e}")
+            time.sleep(2 * attempt)
+
+    # Nothing was written, so the order is still 'dispensing' and startup recovery will retry it.
+    raise RuntimeError(f"Could not settle order '{order_id}': {last_error}")
 
 def process_order(order_id, link):
     print("\n" + "=" * 60)
