@@ -91,6 +91,15 @@ def publish(db, data):
         print(f"[FIRESTORE] Write failed: {e}")
 
 
+def in_maintenance(db):
+    try:
+        doc = db.collection("config").document("gateway").get()
+        return doc.exists and (doc.to_dict() or {}).get("maintenance") is True
+    except Exception as e:
+        print(f"[FIRESTORE] Could not read maintenance flag: {e}")
+        return False
+
+
 def main():
     print("[QUICK-TUNNEL] Connecting to Firebase Firestore...")
     try:
@@ -125,11 +134,13 @@ def main():
             tunnel_url = match.group(0)
             url_registered = True
             print(f"\n[DISCOVERED QUICK TUNNEL URL]: {tunnel_url}\n")
+            # Admin maintenance mode keeps the gateway offline; the admin toggle restores
+            # "online" when going live, using the hostUrl published here.
             publish(db, {
                 "hostUrl": tunnel_url,
                 "paymentApiUrl": f"{tunnel_url}/api/v1",
                 "checkoutUrl": tunnel_url,
-                "status": "online",
+                "status": "offline" if in_maintenance(db) else "online",
             })
             print("[FIRESTORE] Live tunnel configuration written to 'config/gateway'.")
             sync_youpi(tunnel_url)
