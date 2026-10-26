@@ -52,18 +52,22 @@ export async function handleYoupiWebhook(req, res) {
             return;
           }
 
+          // A Clerk user may pay before their wallet doc exists; create it rather than lose the payment.
+          // userId is trusted here: it comes from the signed payload, set server-side by /api/order.
           const userDoc = await transaction.get(userRef);
-          if (!userDoc.exists) {
-            throw new Error(`User document '${userId}' does not exist`);
-          }
-
-          const currentCredit = userDoc.data()?.credit || 0;
+          const currentCredit = userDoc.exists ? userDoc.data()?.credit || 0 : 0;
           const newCredit = currentCredit + amountInINR;
 
-          transaction.update(userRef, {
-            credit: newCredit,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
+          transaction.set(
+            userRef,
+            {
+              userId,
+              credit: newCredit,
+              updatedAt: FieldValue.serverTimestamp(),
+              ...(userDoc.exists ? {} : { timeStamp: FieldValue.serverTimestamp() }),
+            },
+            { merge: true },
+          );
 
           transaction.set(paymentRef, {
             userId,
