@@ -1,0 +1,21 @@
+[Unit]
+Description=Snacker Cloudflare named tunnel connector (cloudflared)
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+# The tunnel token is read from a mode-600 file, not passed on the command line,
+# so it does not appear in `ps` or `systemctl cat`. Installed by './setup_pi.sh cloudflared'.
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/snacker-tunnel.token
+Restart=always
+RestartSec=5
+
+# Output logs to systemd journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

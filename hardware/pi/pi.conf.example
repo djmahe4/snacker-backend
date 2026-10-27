@@ -28,3 +28,9 @@ NGINX_PORT=80
 
 # Firebase Admin service account used by the backend and vending daemon
 SERVICE_ACCOUNT_PATH=$BACKEND_DIR/serviceAccountKey.json
+
+# Public HTTPS URL of a NAMED Cloudflare tunnel hostname (see './setup_pi.sh cloudflared'),
+# e.g. https://pay.example.com. Leave empty when using the Quick Tunnel ('tunnel' step),
+# whose random URL changes on every restart. The tunnel TOKEN is a secret and does not
+# belong here: pass it as CLOUDFLARE_TUNNEL_TOKEN or answer the prompt.
+PUBLIC_URL=

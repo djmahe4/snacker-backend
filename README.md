@@ -325,7 +325,8 @@ chmod +x setup_pi.sh doctor.sh
 ./setup_pi.sh env                 # backend .env (mode 600) + copy webhook secret from youpi-pg
 ./setup_pi.sh services            # systemd units rendered with pi.conf paths/user
 ./setup_pi.sh nginx               # installs hardware/pi/nginx/$NGINX_SITE.conf (snacker-quick)
-./setup_pi.sh tunnel              # cloudflared + URL sync to Firestore and youpi-pg checkout links
+./setup_pi.sh tunnel              # EITHER: Quick Tunnel (random URL that changes on restart) + URL sync to Firestore
+CLOUDFLARE_TUNNEL_TOKEN=... ./setup_pi.sh cloudflared   # OR: named tunnel, fixed URL (recommended; see below)
 ./setup_pi.sh upi                 # REQUIRED: the UPI ID + payee name customers pay to
 ./setup_pi.sh merchant            # REQUIRED: youpi-pg webhook -> backend, prints merchant ID for Vercel
 ```
@@ -334,7 +335,17 @@ chmod +x setup_pi.sh doctor.sh
 
 > **Point payment webhooks at the backend.** youpi-pg sends payment webhooks using the merchant record in its database, not `MERCHANT_WEBHOOK_URL`/`MERCHANT_WEBHOOK_SECRET` in its `.env`. Its seed targets `http://localhost:5000/api/webhook` with a random secret, so wallet credits never arrive. `./setup_pi.sh merchant` sets the URL to `http://127.0.0.1:<BACKEND_PORT>/api/youpi-webhook` and the secret to the backend's `YOUPI_WEBHOOK_SECRET`, then prints the merchant ID (`00000000-0000-0000-0000-000000000001` on a fresh install). Set **both** `YOUPI_MERCHANT_ID` and `NEXT_PUBLIC_YOUPI_MERCHANT_ID` in Vercel to that value and redeploy; any other value makes checkout fail with `400 Merchant not found or not configured`.
 
-`./setup_pi.sh --all` runs everything in that order. Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
+#### Named Cloudflare tunnel (fixed URL, recommended)
+
+A Quick Tunnel gets a new `*.trycloudflare.com` URL every restart, which breaks the observer app and needs Vercel redeploys. A **named tunnel** on a domain you own keeps one URL.
+
+1. Cloudflare dashboard: **Zero Trust > Networks > Tunnels > Create a tunnel** (Cloudflared). On the *Install connector* page pick **Debian** and your architecture, then copy the long token (the value after `service install`). Do not run the dashboard's own `service install` command: it puts the token on the service's command line, where `ps` and `systemctl cat` show it.
+2. On the Pi: `CLOUDFLARE_TUNNEL_TOKEN=<token> ./setup_pi.sh cloudflared` (or run it and paste when prompted; input is hidden). It validates the token, stores it in `/etc/cloudflared/snacker-tunnel.token` (mode 600), installs the `snacker-tunnel` service, and disables the Quick Tunnel sync if present.
+3. Dashboard, that tunnel > **Public Hostname > Add**: hostname `pay.<your-domain>`, service **HTTP** `localhost:80` (the nginx port).
+4. Set `PUBLIC_URL=https://pay.<your-domain>` in `hardware/pi/pi.conf`, then run `./doctor.sh`: it checks the connector is active and that `PUBLIC_URL/youpi.js` returns 200 through Cloudflare.
+5. Vercel: `YOUPI_GATEWAY_URL` and `NEXT_PUBLIC_YOUPI_GATEWAY_URL` = `https://pay.<your-domain>` (not `auto`: the URL no longer changes), then redeploy. The Android observer needs no discovery build: the stock APK works with a fixed HTTPS URL, and nothing needs re-pairing.
+
+`./setup_pi.sh --all` runs everything in that order (using `cloudflared` instead of `tunnel` when `CLOUDFLARE_TUNNEL_TOKEN` is set). Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
 
 #### How payments get confirmed (required: a payment observer)
 

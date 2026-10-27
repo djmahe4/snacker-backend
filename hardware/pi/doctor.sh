@@ -182,6 +182,24 @@ section_systemd() {
             hint "journalctl -u $unit -n 50 --no-pager"
         fi
     done
+
+    # Tunnel connector: named tunnel (snacker-tunnel) or Quick Tunnel sync. Only the enabled
+    # one is checked, since installing the named tunnel disables the Quick Tunnel sync.
+    local tunnel_found=0
+    for unit in snacker-tunnel sync-quick-tunnel; do
+        systemctl is-enabled --quiet "$unit" 2>/dev/null || continue
+        tunnel_found=1
+        if systemctl is-active --quiet "$unit"; then
+            ok "$unit active"
+        else
+            bad "$unit is $(systemctl is-active "$unit" 2>/dev/null): the site is not reachable from the internet"
+            hint "journalctl -u $unit -n 50 --no-pager"
+        fi
+    done
+    if [ "$tunnel_found" -eq 0 ]; then
+        bad "no tunnel connector enabled: nothing exposes this Pi to Vercel and phones"
+        hint "./setup_pi.sh cloudflared   (named tunnel, fixed URL)  or  ./setup_pi.sh tunnel   (Quick Tunnel)"
+    fi
 }
 
 section_ports() {
@@ -249,6 +267,23 @@ section_http() {
     esac
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${NGINX_PORT}/youpi.js")
     [ "$code" = 200 ] && ok "nginx /youpi.js 200" || warn "nginx /youpi.js returned $code"
+
+    # End to end through the named tunnel (Cloudflare -> cloudflared -> nginx -> youpi-pg)
+    if [ -n "${PUBLIC_URL:-}" ]; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PUBLIC_URL%/}/youpi.js")
+        if [ "$code" = 200 ]; then
+            ok "$PUBLIC_URL/youpi.js 200 (public hostname reaches the Pi)"
+        else
+            bad "$PUBLIC_URL/youpi.js returned $code"
+            hint "dashboard: tunnel > Public Hostname must point to HTTP localhost:${NGINX_PORT}; journalctl -u snacker-tunnel -n 50"
+        fi
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PUBLIC_URL%/}/api/v1/admin/observers")
+        case "$code" in
+            404) ok "youpi admin API is not exposed on the public hostname" ;;
+            401|403) warn "youpi admin API is reachable on the public hostname (token-protected); consider blocking /api/v1/admin/ in nginx" ;;
+            *) warn "public /api/v1/admin/observers returned $code" ;;
+        esac
+    fi
 }
 
 section_upi() {

@@ -45,7 +45,11 @@ Steps:
   services  install systemd units rendered with pi.conf paths, enable + restart
   nginx     install hardware/pi/nginx/$NGINX_SITE.conf and reload nginx
   tunnel    cloudflared + sync-quick-tunnel.service: publishes the tunnel URL to
-            Firestore and youpi-pg BASE_CHECKOUT_URL on every start
+            Firestore and youpi-pg BASE_CHECKOUT_URL on every start (Quick Tunnel:
+            random URL that changes on restart)
+  cloudflared  install the connector for a NAMED Cloudflare tunnel (fixed hostname) as the
+            snacker-tunnel service, from CLOUDFLARE_TUNNEL_TOKEN or a prompt; replaces
+            'tunnel'. The token is stored in a mode-600 file, not on the command line
   upi       set the UPI ID + payee name customers pay to (REQUIRED: default is a demo
             placeholder). UPI_ID=... PAYEE_NAME=... or answer the prompts
   merchant  point youpi-pg's payment webhook at the backend with the backend's secret
@@ -277,6 +281,62 @@ step_tunnel() {
     echo "  ℹ️  Watch for the URL: journalctl -u sync-quick-tunnel -f"
 }
 
+step_cloudflared() {
+    # Installs the connector for a NAMED tunnel created in the Cloudflare dashboard
+    # (Zero Trust > Networks > Tunnels > Install connector > Debian). Same result as the
+    # dashboard's 'sudo cloudflared service install <token>', but the token is kept in a
+    # mode-600 file instead of the unit's command line (visible in ps / systemctl cat).
+    # Usage: CLOUDFLARE_TUNNEL_TOKEN=eyJ... ./setup_pi.sh cloudflared   (or answer the prompt)
+    local token="${CLOUDFLARE_TUNNEL_TOKEN:-}" tunnel_id token_file=/etc/cloudflared/snacker-tunnel.token
+    echo "☁️  Installing the named Cloudflare tunnel connector..."
+
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        local arch deb
+        arch=$(dpkg --print-architecture)
+        deb=$(mktemp --suffix=.deb)
+        run curl -fsSL -o "$deb" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb"
+        run sudo dpkg -i "$deb"
+        rm -f "$deb"
+    else
+        echo "  ✅ $(cloudflared --version 2>&1 | head -n 1)"
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  \$ (validate token) then write $token_file (mode 600, owner $PI_USER)"
+    else
+        if [ -z "$token" ]; then
+            read -r -s -p "  Tunnel token (from the dashboard; input hidden): " token
+            echo
+        fi
+        [ -n "$token" ] || { echo "  ❌ No token given"; return 1; }
+        # A tunnel token is base64 JSON {"a": account, "t": tunnel id, "s": secret}
+        tunnel_id=$(printf '%s' "$token" | jq -Rr '@base64d | fromjson | select(.a and .t and .s) | .t' 2>/dev/null || true)
+        [ -n "$tunnel_id" ] || { echo "  ❌ That does not look like a Cloudflare tunnel token (copy the long value after '--token' or 'service install')"; return 1; }
+        echo "  Tunnel ID: $tunnel_id (token fingerprint $(fingerprint "$token"))"
+        run sudo mkdir -p /etc/cloudflared
+        # Written via stdin so the token never appears in a process argument list
+        printf '%s' "$token" | sudo tee "$token_file" >/dev/null
+        run sudo chown "$PI_USER:$PI_USER" "$token_file"
+        run sudo chmod 600 "$token_file"
+    fi
+
+    install_unit snacker-tunnel.service
+    # A named tunnel replaces the Quick Tunnel: stop its sync so two connectors are not running
+    if systemctl cat sync-quick-tunnel.service >/dev/null 2>&1; then
+        run sudo systemctl disable --now sync-quick-tunnel.service
+    fi
+    run sudo systemctl daemon-reload
+    run sudo systemctl enable snacker-tunnel.service
+    run sudo systemctl restart snacker-tunnel.service
+
+    echo "  Next, in the Cloudflare dashboard (this tunnel > Public Hostname > Add):"
+    echo "    hostname: e.g. pay.<your-domain>    service: HTTP  localhost:${NGINX_PORT}"
+    echo "  Then set PUBLIC_URL=https://pay.<your-domain> in hardware/pi/pi.conf, and in Vercel:"
+    echo "    YOUPI_GATEWAY_URL=https://pay.<your-domain>   (not 'auto': the URL no longer changes)"
+    echo "    NEXT_PUBLIC_YOUPI_GATEWAY_URL=https://pay.<your-domain>"
+    echo "  Check: ./doctor.sh http"
+}
+
 step_upi() {
     # Usage: UPI_ID=name@bank PAYEE_NAME="NAME AS IN BANK" ./setup_pi.sh upi   (or answer the prompts)
     local env_file="$YOUPI_DIR/.env"
@@ -344,20 +404,26 @@ step_observer() {
     # youpi-pg confirms a payment only when an observer reports the bank credit alert.
     # This step does not touch the phone; it prints what the phone needs.
     echo "📱 Android payment observer (pairing info)..."
-    local project="" tunnel="" pair
+    local project="" tunnel="${PUBLIC_URL:-}" pair
     if [ -r "$SERVICE_ACCOUNT_PATH" ]; then
         project=$(jq -r '.project_id // empty' "$SERVICE_ACCOUNT_PATH" 2>/dev/null || true)
     fi
-    tunnel=$(journalctl -u sync-quick-tunnel -n 300 --no-pager 2>/dev/null \
+    [ -n "$tunnel" ] || tunnel=$(journalctl -u sync-quick-tunnel -n 300 --no-pager 2>/dev/null \
         | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -n 1 || true)
 
-    echo "  1. Build the observer APK (fork djmahe4/YouPI-PG, main):"
-    if [ -n "$project" ]; then
+    if [ -n "${PUBLIC_URL:-}" ]; then
+        echo "  1. Fixed URL ($PUBLIC_URL): the stock observer APK works, no gateway discovery build needed."
+    else
+        echo "  1. Build the observer APK (fork djmahe4/YouPI-PG, main):"
+    fi
+    if [ -n "${PUBLIC_URL:-}" ]; then
+        :
+    elif [ -n "$project" ]; then
         echo "     ./gradlew assembleDebug -PgatewayDiscoveryUrl='https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/config/gateway'"
     else
         echo "     ⚠️  project_id not readable from $SERVICE_ACCOUNT_PATH; use your Firebase project ID in -PgatewayDiscoveryUrl"
     fi
-    echo "     Firestore rules must allow public read of config/gateway (firebase/firestore.rules)."
+    [ -n "${PUBLIC_URL:-}" ] || echo "     Firestore rules must allow public read of config/gateway (firebase/firestore.rules)."
     echo "  2. On the phone: install, grant Notification Listener access, battery = Unrestricted."
     if [ -n "$tunnel" ]; then
         echo "  3. Gateway URL to TYPE in the app (do not scan the admin QR): $tunnel"
@@ -378,9 +444,15 @@ STEPS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
-        --all) STEPS=("${STEPS_ALL[@]}") ;;
+        --all)
+            # A named tunnel replaces the Quick Tunnel; pick by whether a token was supplied
+            STEPS=()
+            for s in "${STEPS_ALL[@]}"; do
+                if [ "$s" = tunnel ] && [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then s=cloudflared; fi
+                STEPS+=("$s")
+            done ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|upi|merchant|observer) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|cloudflared|upi|merchant|observer) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift
