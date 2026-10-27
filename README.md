@@ -378,7 +378,7 @@ Discovery needs public read on that one document; `firebase/firestore.rules` all
 
 **Pairing.** `./setup_pi.sh observer` prints all of the below for your Pi: the APK build command with your Firebase project ID, the live tunnel URL and a fresh enrollment token.
 1. Install the APK, grant **Notification Listener** access, set battery to **Unrestricted**.
-2. On the Pi, get an enrollment token (valid 10 minutes):
+2. On the Pi, get the enrollment token. It is a **permanent shared secret** (the 10-minute expiry only applies to the admin QR, which you are not using): anyone holding it and the gateway URL can register an observer that forges bank credit alerts. Never paste it into chat or tickets, and rotate it after pairing (step 5).
    ```bash
    cd ~/youpi-pg
    TOKEN=$(grep '^ADMIN_API_TOKEN=' .env | cut -d= -f2-); H="Authorization: Bearer $TOKEN"
@@ -386,6 +386,11 @@ Discovery needs public read on that one document; `firebase/firestore.rules` all
    ```
 3. In the app, **type** the current tunnel URL (`https://<name>.trycloudflare.com`, from `journalctl -u sync-quick-tunnel | grep DISCOVERED`) and the token. Do not scan the admin QR: in localhost mode it embeds `http://localhost:6100`, which the phone cannot reach.
 4. `./doctor.sh upi` should show `payment observer connected (android devices: 1, ...)`.
+5. Rotate the secret so the token you typed stops working (paired phones keep working, they authenticate with their own key):
+   ```bash
+   rm ~/youpi-pg/data/.secrets/android_enrollment_secret && sudo systemctl restart youpi-pg
+   ```
+   Pair another phone later by running `./setup_pi.sh observer` again to read the new token.
 
 Test with a ₹1 top-up and watch `journalctl -f -u youpi-pg -u snacker-backend`: the payment should reach `SUCCESS` and the backend log `[WEBHOOK] Successfully credited`.
 

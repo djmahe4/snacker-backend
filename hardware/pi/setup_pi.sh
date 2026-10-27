@@ -433,9 +433,14 @@ step_observer() {
 
     [ "$DRY_RUN" -eq 1 ] && { echo "  \$ GET /api/v1/admin/sms-gateway/pair-qr (enrollment token)"; return 0; }
     pair=$(youpi_admin GET /api/v1/admin/sms-gateway/pair-qr) || return 1
-    # The token is a pairing credential: printed once for you to type, never logged elsewhere.
-    echo "  4. Enrollment token (valid 10 minutes): $(printf '%s' "$pair" | jq -r '.enrollmentToken // .token // "unavailable"')"
+    # This is a PERMANENT shared secret (youpi's android_enrollment_secret): it never expires
+    # when typed by hand, and anyone holding it plus the gateway URL can register an observer
+    # that forges bank credit alerts. Never paste it into chat or tickets; rotate after pairing.
+    echo "  4. Enrollment token (permanent secret, do not share): $(printf '%s' "$pair" | jq -r '.enrollmentToken // .token // "unavailable"')"
     echo "  5. Tap Pair, then verify with: ./doctor.sh upi   (expect 'payment observer connected')"
+    echo "  6. Rotate the enrollment secret now so the token above stops working:"
+    echo "       rm $YOUPI_DIR/data/.secrets/android_enrollment_secret && sudo systemctl restart youpi-pg"
+    echo "     (already paired phones keep working; pairing another phone then needs this step's new token)"
 }
 
 # ---- argument parsing -------------------------------------------------------
