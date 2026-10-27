@@ -12,6 +12,12 @@ Restart=always
 RestartSec=3
 # Rewritten by setup_pi.sh from SERVICE_ACCOUNT_PATH in pi.conf
 Environment=FIREBASE_SERVICE_ACCOUNT_PATH=/home/pi/snacker-backend/serviceAccountKey.json
+# Logging: INFO by default. For debugging: sudo systemctl edit snacker-vending, add
+#   [Service]
+#   Environment=LOG_LEVEL=DEBUG
+# then restart. PYTHONUNBUFFERED makes any stray print() reach the journal immediately.
+Environment=LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
 
 # Output logs to systemd journal
 StandardOutput=journal
