@@ -23,7 +23,7 @@ set -euo pipefail
 load_pi_conf
 
 DRY_RUN=0
-STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi merchant observer)
+STEPS_ALL=(packages udev youpi backend venv env services nginx tunnel upi merchant observer whatsapp)
 
 # Print a command, then run it (or only print it with --dry-run)
 run() {
@@ -56,7 +56,9 @@ Steps:
             (stored in youpi's DB, not .env); prints the merchant ID for Vercel
   observer  REQUIRED for payments to confirm: prints the APK build command (gateway
             discovery for this Firebase project), the live tunnel URL and a fresh
-            10-minute enrollment token for pairing the Android observer app
+            enrollment token (a permanent secret) for pairing the Android observer app
+  whatsapp  link the WhatsApp number that sends customer login OTPs (pairing code, no QR).
+            Redo after an OS reinstall/corruption. WHATSAPP_PHONE=91... WHATSAPP_TEST_TO=91...
 
 Config: $PI_CONF_LOADED
 EOF
@@ -443,6 +445,55 @@ step_observer() {
     echo "     (already paired phones keep working; pairing another phone then needs this step's new token)"
 }
 
+step_whatsapp() {
+    # Links the WhatsApp account youpi-pg sends customer login OTPs from (its "Berry"
+    # session, stored in $YOUPI_DIR/data/berry_auth/). Needed again after an OS reinstall or
+    # SD-card corruption, since that folder is lost. Uses a pairing code, not a QR, so it
+    # works on a headless Pi.
+    # Usage: WHATSAPP_PHONE=919876543210 [WHATSAPP_TEST_TO=919876543210] ./setup_pi.sh whatsapp
+    local phone="${WHATSAPP_PHONE:-}" status resp code i
+    echo "💬 Linking WhatsApp for customer OTPs..."
+    [ "$DRY_RUN" -eq 1 ] && { echo "  \$ GET /admin/whatsapp/status, POST /admin/whatsapp/pairing-code, poll until CONNECTED"; return 0; }
+
+    status=$(youpi_admin GET /api/v1/admin/whatsapp/status | jq -r '.status // "UNKNOWN"') || return 1
+    if [ "$status" = CONNECTED ]; then
+        echo "  ✅ Already linked ($(youpi_admin GET /api/v1/admin/whatsapp/status | jq -r '.phoneNumber // "number not reported"'))."
+    else
+        echo "  Current status: $status"
+        [ -n "$phone" ] || read -r -p "  WhatsApp number that will SEND the OTPs (country code, digits only, e.g. 919876543210): " phone
+        phone=$(printf '%s' "$phone" | tr -cd '0-9')
+        [ -n "$phone" ] || { echo "  ❌ A phone number is required"; return 1; }
+
+        resp=$(youpi_admin POST /api/v1/admin/whatsapp/pairing-code "$(jq -n --arg p "$phone" '{phoneNumber: $p}')")
+        code=$(printf '%s' "$resp" | jq -r '.pairingCode // empty')
+        if [ -z "$code" ]; then
+            echo "  ❌ No pairing code: $(printf '%s' "$resp" | jq -r '.error // .')"
+            return 1
+        fi
+        echo "  Pairing code: $code"
+        echo "  On the phone for $phone: WhatsApp > Linked devices > Link a device >"
+        echo "  'Link with phone number instead', then enter the code. Waiting up to 3 minutes..."
+        for i in $(seq 1 36); do
+            sleep 5
+            status=$(youpi_admin GET /api/v1/admin/whatsapp/status | jq -r '.status // "UNKNOWN"')
+            [ "$status" = CONNECTED ] && break
+        done
+        if [ "$status" != CONNECTED ]; then
+            echo "  ❌ Not linked yet (status: $status). Re-run this step for a fresh code."
+            return 1
+        fi
+        echo "  ✅ Linked. Session saved in $YOUPI_DIR/data/berry_auth/ (back this folder up)."
+    fi
+
+    if [ -n "${WHATSAPP_TEST_TO:-}" ]; then
+        echo "  Sending a test message to ${WHATSAPP_TEST_TO}..."
+        youpi_admin POST /api/v1/admin/whatsapp/test-message \
+            "$(jq -n --arg t "$(printf '%s' "$WHATSAPP_TEST_TO" | tr -cd '0-9')" '{to: $t, message: "Snacker: WhatsApp OTP sender linked."}')" \
+            | jq '{success, delivered, error}'
+    fi
+    echo "  ℹ️  Use a spare number: this is an unofficial WhatsApp client and automated sending can get a number banned."
+}
+
 # ---- argument parsing -------------------------------------------------------
 STEPS=()
 [ $# -eq 0 ] && { usage; exit 0; }
@@ -457,7 +508,7 @@ while [ $# -gt 0 ]; do
                 STEPS+=("$s")
             done ;;
         --list|-h|--help) usage; exit 0 ;;
-        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|cloudflared|upi|merchant|observer) STEPS+=("$1") ;;
+        packages|udev|youpi|backend|venv|env|services|nginx|tunnel|cloudflared|upi|merchant|observer|whatsapp) STEPS+=("$1") ;;
         *) echo "Unknown step: $1"; usage; exit 1 ;;
     esac
     shift

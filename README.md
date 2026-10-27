@@ -329,6 +329,7 @@ chmod +x setup_pi.sh doctor.sh
 CLOUDFLARE_TUNNEL_TOKEN=... ./setup_pi.sh cloudflared   # OR: named tunnel, fixed URL (recommended; see below)
 ./setup_pi.sh upi                 # REQUIRED: the UPI ID + payee name customers pay to
 ./setup_pi.sh merchant            # REQUIRED: youpi-pg webhook -> backend, prints merchant ID for Vercel
+./setup_pi.sh whatsapp            # link the WhatsApp number that sends customer OTPs (redo after OS reinstall)
 ```
 
 > **Set your UPI ID.** youpi-pg starts with a demo receiving account (`merchant@upi`, payee "YOUPI Demo Store"). Until you replace it, customers are shown a UPI ID that is not yours. Run `./setup_pi.sh upi`, or non-interactively `UPI_ID=9876543210@ybl PAYEE_NAME="NAME AS IN BANK" ./setup_pi.sh upi`. Use the payee name exactly as your bank shows it for that UPI ID: payments route by UPI ID alone, but UPI apps show the bank's registered name next to it and a mismatch can make customers hesitate. Re-run the step any time to change either value; no restart is needed. `./doctor.sh upi` shows the active one.

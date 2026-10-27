@@ -369,6 +369,17 @@ section_upi() {
         bad "no payment observer connected: every payment will end 'Not Confirmed'"
         hint "pair the Android observer app (README: 'How payments get confirmed')"
     fi
+
+    # WhatsApp sender for customer login OTPs (lost after an OS reinstall / SD corruption)
+    local wa
+    wa=$(printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 5 -H @- \
+        "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/whatsapp/status" | jq -r '.status // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)
+    if [ "$wa" = CONNECTED ]; then
+        ok "WhatsApp OTP sender linked"
+    else
+        warn "WhatsApp OTP sender is $wa: customer OTPs will not be delivered"
+        hint "./setup_pi.sh whatsapp"
+    fi
 }
 
 SECTIONS=("$@")
