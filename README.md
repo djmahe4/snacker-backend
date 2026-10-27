@@ -25,6 +25,7 @@ Welcome to the **SNACKER Backend** repository. This repository houses the comple
 - [Raspberry Pi Deployment Guide](#-raspberry-pi-deployment-guide)
   - [Automated Setup](#automated-setup)
   - [Systemd Services](#systemd-services)
+  - [Debugging](#debugging)
   - [Nginx Reverse Proxy](#nginx-reverse-proxy)
 - [Domain Migration & Production Guide (Docs)](#-domain-migration--production-guide)
 - [Contributing & License](#-license)
@@ -416,6 +417,8 @@ To compare the Vercel `YOUPI_WEBHOOK_SECRET` with the Pi without printing it, ru
 | **YouPI-PG Gateway** | `/etc/systemd/system/youpi-pg.service` | Dynamic UPI FCFS queue engine | `:7000` (Checkout), `:6100` (API), `:6001` (Admin) |
 | **Vending Controller** | `/etc/systemd/system/snacker-vending.service` | USB QR scanner & Arduino Mega controller | `/dev/input/event*` + `/dev/ttyACM0` |
 | **Snacker Backend API** | `/etc/systemd/system/snacker-backend.service` | Express API and payment webhook receiver (`api/server.js`) | `:5000` |
+| **Quick Tunnel sync** | `/etc/systemd/system/sync-quick-tunnel.service` | Runs the Quick Tunnel, publishes its URL to Firestore `config/gateway` (Plan B, no domain) | `cloudflared` → nginx `:80` |
+| **Named tunnel** | `/etc/systemd/system/snacker-tunnel.service` | Named Cloudflare tunnel connector (only with your own domain; replaces the Quick Tunnel) | `cloudflared` → nginx `:80` |
 
 #### Live Log Monitoring:
 ```bash
@@ -425,6 +428,77 @@ sudo journalctl -u snacker-vending.service -f
 # YouPI-PG payment gateway transactions
 sudo journalctl -u youpi-pg.service -f
 ```
+
+---
+
+### Debugging
+
+**1. Start with the doctor.** It is read-only and every failing line prints the next command to run.
+
+```bash
+cd ~/snacker-backend/hardware/pi
+./doctor.sh                 # everything
+./doctor.sh systemd ports   # are services up and listening?
+./doctor.sh http            # does nginx reach the backend and youpi-pg?
+./doctor.sh upi             # UPI ID, webhook URL/secret, payment observer, WhatsApp OTP sender
+```
+
+**2. Read the right log.** All services log to the systemd journal.
+
+| Component | Command | What to look for |
+| :--- | :--- | :--- |
+| Vending daemon (scanner, Arduino, refunds) | `journalctl -u snacker-vending -f` | `[SCAN]`, `[ORDER]`, `[ARDUINO ->/<-]`, `[OK]`, `[ALERT]`, `[REFUND]` |
+| Backend (wallet credit) | `journalctl -u snacker-backend -f` | `[WEBHOOK] Successfully credited`, `Invalid webhook signature` |
+| YouPI-PG (checkout, observers, matching) | `journalctl -u youpi-pg -f` | observations, `SUCCESS` / `REJECTED` with a reason, webhook delivery |
+| Quick Tunnel | `journalctl -u sync-quick-tunnel -f` | `DISCOVERED QUICK TUNNEL URL`, `[FATAL]`, `cloudflared exited` |
+| Named tunnel | `journalctl -u snacker-tunnel -n 40` | `Registered tunnel connection`, `No ingress rules` (no route set in the dashboard) |
+
+Follow one payment end to end:
+
+```bash
+journalctl -f -u youpi-pg -u snacker-backend | grep -iE "observ|sms|SUCCESS|REJECT|webhook|credited"
+```
+
+**3. Turn on debug logging for the vending daemon.** At `DEBUG` it also logs every raw Arduino line, the serial ports and input devices it found, scan length and timing, and each order's items. Every error includes a full traceback at any level.
+
+```bash
+sudo systemctl edit snacker-vending
+#   [Service]
+#   Environment=LOG_LEVEL=DEBUG
+sudo systemctl restart snacker-vending
+journalctl -u snacker-vending -f
+# Back to normal: sudo systemctl revert snacker-vending && sudo systemctl restart snacker-vending
+```
+
+`LOG_FILE=/path/vending.log` (same `systemctl edit`) also keeps a rotating copy (1 MB x 3). With the overlay file system enabled, point it at persistent storage or it only lives in RAM. Order IDs are shortened in logs (`abcd…xy`) because the ID is what the vending QR contains.
+
+**4. Find the cause by symptom.**
+
+| Symptom | Likely cause | Check / fix |
+| :--- | :--- | :--- |
+| Scanned QR, nothing happens | Scanner not grabbed, or short or garbled scan | Vending log: `[READY] Listening ...` at start, then `[SCAN]`. At DEBUG: `[SCAN] N char(s)`. User must be in `input` group (`./setup_pi.sh udev`, then log out and in) |
+| `[REJECT] ... status 'completed'` | QR already used | Expected: each order vends once |
+| `[ALERT] ... TIMEOUT` or `JAMMED` | Arduino not answering, or no drop detected | DEBUG shows the raw serial lines. `ls /dev/ttyACM*`, user in `dialout` group, Arduino powered. The customer is refunded automatically (`[REFUND]`) |
+| Payment ends "Not Confirmed" | No payment observer, or the alert was rejected | `./doctor.sh upi` must show `payment observer connected`. youpi log shows the `REJECTED` reason, for example `MISSING_12_DIGIT_REFERENCE` (alert has no UPI or transaction reference, as with MobiKwik wallet IDs) |
+| Payment SUCCESS but wallet not credited | Webhook URL or secret wrong, or backend can't reach Firestore | `./doctor.sh upi` webhook lines; `./setup_pi.sh merchant`. Backend log for `Invalid webhook signature` or Firebase errors |
+| Checkout: `400 Merchant not found or not configured` | Vercel merchant ID wrong | Vercel `YOUPI_MERCHANT_ID` and `NEXT_PUBLIC_YOUPI_MERCHANT_ID` = the ID `./setup_pi.sh merchant` prints, then redeploy |
+| Checkout opens a `localhost` link | Frontend not rewriting to the tunnel URL | Vercel `YOUPI_GATEWAY_URL=auto` (Quick Tunnel) or your fixed URL (named tunnel), then redeploy |
+| Site unreachable, `502` or `530`, URL doesn't resolve | Tunnel down or URL changed | `systemctl is-active sync-quick-tunnel snacker-tunnel`; current URL from the tunnel log; `curl -s -o /dev/null -w "%{http_code}" <url>/youpi.js` should be `200` |
+| Tunnel sync exits with `Invalid service account certificate` | Wrong JSON at `SERVICE_ACCOUNT_PATH` | `jq -r '.type, .project_id' <key>` must print `service_account` and your project ID. Generate a key under Firebase console > Project settings > Service accounts |
+| Observer app shows UNPAIRED / doctor: no observer | Phone never paired | `./setup_pi.sh observer`, type the URL and token in the app, tap **Manual Connect** (not Scan QR). Phone side: `adb logcat -s YoupiApiClient` |
+| Customer OTP never arrives | WhatsApp sender not linked (lost after an OS reinstall) | `./doctor.sh upi`, then `./setup_pi.sh whatsapp` |
+
+**5. Test the bank-alert parser without paying.** Runs YouPI-PG's own SMS parser on a sample message and shows the amount and reference it extracts:
+
+```bash
+cd ~/youpi-pg
+node --input-type=module -e '
+import { BankSmsParser } from "./packages/core/src/bank-sms-parser.js";
+const r = BankSmsParser.parse({ text: "Rs 2.0 was credited to your account with transaction ID FMPIB3637085677. Currently, your account balance is Rs 75.0 on FamPay.", sender: "JD-FAMPAY-S", timestamp: Date.now() });
+console.log(JSON.stringify(r, (k, v) => typeof v === "bigint" ? v.toString() : v, 2));'
+```
+
+You want `amountPaise` equal to the paid amount, not the balance, and a `bankReferenceNumber`. `null` means the message isn't recognised as a credit.
 
 ---
 
