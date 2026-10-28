@@ -34,3 +34,6 @@ SERVICE_ACCOUNT_PATH=$BACKEND_DIR/serviceAccountKey.json
 # whose random URL changes on every restart. The tunnel TOKEN is a secret and does not
 # belong here: pass it as CLOUDFLARE_TUNNEL_TOKEN or answer the prompt.
 PUBLIC_URL=
+
+# YouPI-PG source. Default: our fork (upstream + FamPay email alerts + observer discovery).
+# YOUPI_REPO=https://github.com/djmahe4/YouPI-PG.git

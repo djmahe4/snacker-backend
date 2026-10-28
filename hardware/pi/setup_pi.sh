@@ -100,11 +100,16 @@ KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout"'
 }
 
 step_youpi() {
-    echo "💳 Setting up YouPI-PG in $YOUPI_DIR..."
+    # Our fork: upstream YouPI-PG plus FamPay email alerts (famapp.in) and observer gateway discovery
+    local repo="${YOUPI_REPO:-https://github.com/djmahe4/YouPI-PG.git}"
+    echo "💳 Setting up YouPI-PG in $YOUPI_DIR (from $repo)..."
     if [ ! -d "$YOUPI_DIR" ]; then
-        run git clone https://github.com/gxurav1710/youpi-pg.git "$YOUPI_DIR"
+        run git clone "$repo" "$YOUPI_DIR"
     else
-        run git -C "$YOUPI_DIR" pull --ff-only
+        if [ "$(git -C "$YOUPI_DIR" remote get-url origin 2>/dev/null)" != "$repo" ]; then
+            run git -C "$YOUPI_DIR" remote set-url origin "$repo"
+        fi
+        run git -C "$YOUPI_DIR" pull --ff-only origin main
     fi
     run npm --prefix "$YOUPI_DIR" install --omit=dev
 
