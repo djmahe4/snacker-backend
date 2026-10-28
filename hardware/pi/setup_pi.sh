@@ -373,6 +373,20 @@ step_upi() {
     printf 'Authorization: Bearer %s\n' "$token" | curl -s --max-time 10 -H @- \
         -H 'Content-Type: application/json' -d "$body" \
         "http://127.0.0.1:${YOUPI_API_PORT}/api/v1/admin/upi-settings" | jq .
+
+    # The Gmail observer attributes bank emails to one receiving account and drops every email
+    # without it (fail-closed): it reads RECEIVING_ACCOUNT_ID from youpi-pg's .env.
+    local rid
+    rid=$(youpi_admin GET /api/v1/admin/upi-accounts | jq -r '[.accounts[] | select(.isActive)][0].id // empty')
+    if [ -n "$rid" ] && [ "$(env_get "$env_file" RECEIVING_ACCOUNT_ID || true)" != "$rid" ]; then
+        echo "  \$ (set) RECEIVING_ACCOUNT_ID=$rid in $env_file, then restart youpi-pg"
+        if grep -qE '^RECEIVING_ACCOUNT_ID=' "$env_file"; then
+            sed -i "s/^RECEIVING_ACCOUNT_ID=.*/RECEIVING_ACCOUNT_ID=$rid/" "$env_file"
+        else
+            printf 'RECEIVING_ACCOUNT_ID=%s\n' "$rid" >> "$env_file"
+        fi
+        sudo systemctl restart youpi-pg.service
+    fi
     echo "  ℹ️  Verify with: ./doctor.sh upi"
 }
 

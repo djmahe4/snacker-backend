@@ -361,13 +361,28 @@ section_upi() {
         return
     fi
     devices=$(printf '%s' "$obs" | jq -r '.android.totalDevices // 0')
-    gmail=$(printf '%s' "$obs" | jq -r '.gmail.isLoggedIn // false')
     sms=$(printf '%s' "$obs" | jq -r '.sms.isPaired // false')
+    # The observers API's "gmail" block reports browser-login mode only; the OAuth email poller
+    # reports on the observer's own /health (port 6003)
+    local gh gstate greason
+    gh=$(curl -s --max-time 5 "http://127.0.0.1:6003/health" || true)
+    gstate=$(printf '%s' "$gh" | jq -r '.lifecycleState // "DOWN"' 2>/dev/null || echo DOWN)
+    greason=$(printf '%s' "$gh" | jq -r '.degradedReason // empty' 2>/dev/null || true)
+    gmail=false
+    if [ "$(printf '%s' "$gh" | jq -r '.oauthConfigured // false' 2>/dev/null)" = true ]; then
+        if [ "$gstate" = ACTIVE ]; then
+            gmail=true
+            ok "Gmail email observer ACTIVE (last poll $(printf '%s' "$gh" | jq -r '.lastPollAt // "never"'), observed $(printf '%s' "$gh" | jq -r '.observedCount // 0'))"
+        else
+            bad "Gmail email observer signed in but $gstate${greason:+ ($greason)}"
+            [ "$greason" = MISSING_RECEIVING_ACCOUNT ] && hint "./setup_pi.sh upi   (writes RECEIVING_ACCOUNT_ID)"
+        fi
+    fi
     if [ "$devices" -gt 0 ] || [ "$gmail" = true ] || [ "$sms" = true ]; then
         ok "payment observer connected (android devices: $devices, gmail: $gmail, sms: $sms)"
     else
         bad "no payment observer connected: every payment will end 'Not Confirmed'"
-        hint "pair the Android observer app (README: 'How payments get confirmed')"
+        hint "sign in the Gmail email observer, or pair the Android observer app (README: 'How payments get confirmed')"
     fi
 
     # WhatsApp sender for customer login OTPs (lost after an OS reinstall / SD corruption)
