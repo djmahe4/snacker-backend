@@ -25,6 +25,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 import time
 import serial
 import serial.tools.list_ports
@@ -61,6 +62,12 @@ def setup_logging():
 
 
 log = setup_logging()
+
+# Only one reader of the serial port at a time: a dispense holds this lock while it waits for
+# DONE/WARN; the idle monitor reads the port only when it can take the lock without waiting.
+serial_lock = threading.Lock()
+READY_BANNER = "SYSTEM:READY"           # printed by the firmware's setup(), i.e. on every Mega reset
+EXPECTED_RESET_WINDOW_S = 6             # opening the port resets the Mega once; a banner this soon is expected
 
 
 def short_id(order_id):
@@ -150,6 +157,11 @@ def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
       - 'WARN:<SLOT>:...'                            -> bag failed (jam / abort / skipped)
     Returns SUCCESS only if every bag succeeded, otherwise JAMMED / TIMEOUT / ERROR.
     """
+    with serial_lock:  # keep the idle monitor from consuming our DONE/WARN lines
+        return _send_arduino_dispense_locked(ser, slot, count, run_ms)
+
+
+def _send_arduino_dispense_locked(ser, slot, count, run_ms):
     try:
         stale = ser.in_waiting
         if stale:
@@ -189,6 +201,55 @@ def send_arduino_dispense(ser, slot, count=1, run_ms=MOTOR_RUN_MS):
     except Exception:
         log.exception("[SERIAL] Communication error while dispensing slot %s", slot)
         return "ERROR"
+
+def start_serial_monitor(ser, opened_at):
+    """
+    Logs everything the Mega prints while no dispense is running. The key signal is the
+    firmware's boot banner: it only appears when the Mega resets, and while it resets its relay
+    pins float (motors can run uncommanded). Repeated resets point at power or at another
+    process opening the port.
+    """
+    state = {"resets": 0, "failing": False}
+
+    def monitor():
+        while True:
+            if serial_lock.acquire(blocking=False):
+                try:
+                    while ser.in_waiting > 0:
+                        line = ser.readline().decode("utf-8", errors="ignore").strip()
+                        if not line:
+                            continue
+                        if line.startswith(READY_BANNER):
+                            since_open = time.time() - opened_at
+                            if state["resets"] == 0 and since_open < EXPECTED_RESET_WINDOW_S:
+                                log.info("[ARDUINO] Firmware ready after port open (%s)", line)
+                            else:
+                                log.warning(
+                                    "[ARDUINO] Mega RESET detected (#%d, %.0fs after port open). "
+                                    "Relay pins float during a reset, so motors may run uncommanded. "
+                                    "Check the Mega/relay power supply and whether another process "
+                                    "opens the port (sudo fuser -v %s).",
+                                    state["resets"] + 1, since_open, ser.port)
+                            state["resets"] += 1
+                        elif line.startswith(("ERROR:", "WARN:", "DONE:", "STATUS:DISPENSING")):
+                            # Motor activity or errors with no dispense in progress were not requested by us
+                            log.warning("[ARDUINO <-] %s (no dispense in progress)", line)
+                        else:
+                            log.debug("[ARDUINO <-] %s (idle)", line)
+                    if state["failing"]:
+                        log.info("[SERIAL] Monitor reading %s again", ser.port)
+                        state["failing"] = False
+                except Exception as e:
+                    if not state["failing"]:  # log once per outage, not every poll
+                        log.error("[SERIAL] Monitor cannot read %s: %s (USB disconnected?)", ser.port, e)
+                        state["failing"] = True
+                finally:
+                    serial_lock.release()
+            time.sleep(0.2)
+
+    threading.Thread(target=monitor, name="serial-monitor", daemon=True).start()
+    log.info("[SERIAL] Idle monitor started: Mega resets and unrequested output will be logged")
+
 
 def refund_credits(user_id, amount, order_id, reason):
     """Refunds credits back to student's wallet if a slot jams."""
@@ -337,10 +398,20 @@ def main():
         port = find_arduino_port()
         try:
             ser = serial.Serial(port, SERIAL_BAUD, timeout=2)
+            opened_at = time.time()
+            log.info("[SERIAL] Opened %s (this resets the Mega once)", port)
+            start_serial_monitor(ser, opened_at)
             time.sleep(2)  # Wait for Arduino bootloader reset
-            ser.write(b"STATUS\n")
+            with serial_lock:
+                ser.write(b"STATUS\n")  # the reply (INFO:SLOTS=...) is logged by the monitor at DEBUG
             log.info("[SERIAL] Connected to Arduino Mega on %s", port)
         except Exception as e:
+            if ser is not None:
+                try:
+                    ser.close()  # the monitor then reports the outage once and stays quiet
+                except Exception:
+                    pass
+            ser = None
             log.warning("[WAIT] Waiting for Arduino Mega on %s... (%s)", port, e)
             time.sleep(3)
 

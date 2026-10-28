@@ -476,6 +476,7 @@ journalctl -u snacker-vending -f
 
 | Symptom | Likely cause | Check / fix |
 | :--- | :--- | :--- |
+| Motors run with no order, or all at once | The Mega keeps resetting (its relay pins float during a reset), or the relays trigger on HIGH | Vending log: `Mega RESET detected (#n ...)` repeating means resets, usually power (Pi USB can't supply the relay board; give the relays their own 5 V with a common ground) or another process opening the port (`sudo fuser -v /dev/ttyUSB0`, ModemManager, brltty). `... (no dispense in progress)` means the Mega reported motor activity nobody requested. No resets logged but motors still on means relay polarity: H/L jumper to L, or flip `RELAY_ACTIVE`/`RELAY_INACTIVE` in the firmware |
 | Scanned QR, nothing happens | Scanner not grabbed, or short or garbled scan | Vending log: `[READY] Listening ...` at start, then `[SCAN]`. At DEBUG: `[SCAN] N char(s)`. User must be in `input` group (`./setup_pi.sh udev`, then log out and in) |
 | `[REJECT] ... status 'completed'` | QR already used | Expected: each order vends once |
 | `[ALERT] ... TIMEOUT` or `JAMMED` | Arduino not answering, or no drop detected | DEBUG shows the raw serial lines. `ls /dev/ttyACM*`, user in `dialout` group, Arduino powered. The customer is refunded automatically (`[REFUND]`) |
