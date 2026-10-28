@@ -18,6 +18,8 @@ Environment=FIREBASE_SERVICE_ACCOUNT_PATH=/home/pi/snacker-backend/serviceAccoun
 # then restart. PYTHONUNBUFFERED makes any stray print() reach the journal immediately.
 Environment=LOG_LEVEL=INFO
 Environment=PYTHONUNBUFFERED=1
+# QR scanner: matched by name (Newtologic 4010E, Fingers W106, "scanner"/"barcode"...).
+# For another model, override in a drop-in: Environment=SCANNER_NAME=<part of its name>
 
 # Output logs to systemd journal
 StandardOutput=journal

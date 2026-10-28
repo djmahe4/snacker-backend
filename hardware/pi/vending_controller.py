@@ -137,9 +137,17 @@ def find_scanner_device():
             log.debug("[SCANNER] Input device %s '%s' keyboard-like=%s", d.path, d.name, is_keyboard)
             if is_keyboard:  # skips mice / consumer-control nodes
                 devices.append(d)
+        # Explicit override: SCANNER_NAME=<part of the device name> (see: journalctl at LOG_LEVEL=DEBUG)
+        wanted = os.environ.get("SCANNER_NAME", "").strip().lower()
+        if wanted:
+            for dev in devices:
+                if wanted in dev.name.lower():
+                    return dev
+            log.debug("[SCANNER] No input device name contains SCANNER_NAME='%s'", wanted)
         for dev in devices:
             name = dev.name.lower()
-            if any(k in name for k in ["scanner", "barcode", "omni", "fingers", "w106", "hid"]):
+            if any(k in name for k in ["scanner", "barcode", "omni", "fingers", "w106", "hid",
+                                       "newtologic", "4010"]):  # Newtologic 4010E (QR scanner in use)
                 return dev
         # Fallback to the first available keyboard device
         for dev in devices:
