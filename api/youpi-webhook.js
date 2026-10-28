@@ -33,9 +33,24 @@ export async function handleYoupiWebhook(req, res) {
     }
 
     const payload = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    const event = payload.event;
 
-    // Process verified SUCCESS payment event
-    if (payload.event === "SUCCESS") {
+    // Which webhook events mean "money arrived" (YouPI-PG / Mitto Pay):
+    //   OBSERVED_SUCCESS: a bank/UPI alert (Gmail, SMS, notification) matched this UPI session.
+    //                     Upstream changed UPI matches from SUCCESS to this; we credit on it.
+    //   RECONCILED:       the payment was also matched on an imported bank statement.
+    //   SUCCESS:          kept for older gateway versions that sent it for UPI matches.
+    // Crediting is idempotent per orderId, so OBSERVED_SUCCESS followed by RECONCILED
+    // credits once. Everything else (FAILED, EXPIRED, CANCELLED, MANUAL_REVIEW) is logged only.
+    const CREDIT_EVENTS = new Set(["OBSERVED_SUCCESS", "RECONCILED", "SUCCESS"]);
+    if (!CREDIT_EVENTS.has(event)) {
+      console.log(
+        `[WEBHOOK] Order ${payload.orderId} event '${event}' (${payload.method || "?"}, ` +
+          `settlement ${payload.settlementState || "?"}): no credit`,
+      );
+    }
+
+    if (CREDIT_EVENTS.has(event)) {
       const userId = payload.metadata?.userId;
       const amountInINR = Number(payload.amount);
       const orderId = payload.orderId;
@@ -75,11 +90,18 @@ export async function handleYoupiWebhook(req, res) {
             amount: amountInINR,
             utr: payload.utr || "",
             status: "SUCCESS",
+            gatewayEvent: event,
+            settlementState: payload.settlementState || null,
             timeStamp: FieldValue.serverTimestamp(),
           });
 
-          console.log(`[WEBHOOK] Successfully credited ${amountInINR} points to user '${userId}'`);
+          console.log(`[WEBHOOK] Successfully credited ${amountInINR} points to user '${userId}' (${event}, order ${orderId})`);
         });
+      } else {
+        console.warn(
+          `[WEBHOOK] Order ${orderId} event '${event}' not credited: ` +
+            `${userId ? "" : "missing metadata.userId "}${amountInINR > 0 ? "" : `invalid amount '${payload.amount}'`}`,
+        );
       }
     }
 
