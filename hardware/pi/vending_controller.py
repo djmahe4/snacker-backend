@@ -202,6 +202,25 @@ def _send_arduino_dispense_locked(ser, slot, count, run_ms):
         log.exception("[SERIAL] Communication error while dispensing slot %s", slot)
         return "ERROR"
 
+LOW_VCC_MV = 4500   # below this the Mega/relay supply is sagging (USB 5 V nominal)
+
+
+def log_diagnostics(line):
+    """Firmware self-reports (boot cause, supply voltage, relay pin levels): the CLI substitute for LEDs."""
+    log.info("[ARDUINO] %s", line)
+    fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+    vcc = fields.get("vcc_mv") or fields.get("INFO:VCC_MV")
+    if vcc and vcc.lstrip("-").isdigit() and 0 < int(vcc) < LOW_VCC_MV:
+        log.warning("[ARDUINO] Mega supply is LOW: %s mV (< %d). Relay board drawing from the "
+                    "Mega/Pi USB? Give it its own 5 V supply with a common ground.", vcc, LOW_VCC_MV)
+    if "BROWNOUT" in fields.get("reset", ""):
+        log.warning("[ARDUINO] Last Mega reset was a BROWNOUT: the supply dropped too low.")
+    # Only the idle monitor calls this (a dispense holds the serial lock), so any ON pin is unrequested
+    if line.startswith("INFO:PINS") and "(ON)" in line:
+        on = [p.split("=")[0] for p in line.split()[1:] if "(ON)" in p]
+        log.warning("[ARDUINO] Relay pin(s) %s are ON with no dispense in progress.", ",".join(on))
+
+
 def start_serial_monitor(ser, opened_at):
     """
     Logs everything the Mega prints while no dispense is running. The key signal is the
@@ -231,6 +250,8 @@ def start_serial_monitor(ser, opened_at):
                                     "opens the port (sudo fuser -v %s).",
                                     state["resets"] + 1, since_open, ser.port)
                             state["resets"] += 1
+                        elif line.startswith(("INFO:BOOT", "INFO:DIAG", "INFO:PINS", "INFO:VCC")):
+                            log_diagnostics(line)
                         elif line.startswith(("ERROR:", "WARN:", "DONE:", "STATUS:DISPENSING")):
                             # Motor activity or errors with no dispense in progress were not requested by us
                             log.warning("[ARDUINO <-] %s (no dispense in progress)", line)
@@ -404,6 +425,7 @@ def main():
             time.sleep(2)  # Wait for Arduino bootloader reset
             with serial_lock:
                 ser.write(b"STATUS\n")  # the reply (INFO:SLOTS=...) is logged by the monitor at DEBUG
+                ser.write(b"DIAG\n")    # boot count, reset cause, supply voltage, relay pin levels
             log.info("[SERIAL] Connected to Arduino Mega on %s", port)
         except Exception as e:
             if ser is not None:

@@ -16,8 +16,31 @@
  *   - Anti-jamming runtime watchdog (auto-cuts motor if item jams or timeout expires)
  *   - Diagnostic self-test suite (STATUS, PING, TEST_ALL)
  *   - Status indicators: Green LED (12), Red LED (11), Active Buzzer (10)
+ *
+ *  CLI diagnostics (no LEDs needed):
+ *    PINS    -> level each relay pin is actually at, and ON/OFF meaning
+ *    VCC     -> the Mega's own supply voltage in mV (internal bandgap)
+ *    UPTIME  -> ms since this boot (small again = the Mega reset)
+ *    DIAG    -> boot count, last reset cause, uptime, VCC and PINS in one go
+ *  On every boot it also prints: INFO:BOOT count=<n> reset=<cause> vcc_mv=<mV>
  * =====================================================================
  */
+
+#include <EEPROM.h>
+#include <avr/wdt.h>
+
+// Reset cause, captured before Arduino's init() runs (standard avr-libc pattern).
+// Some bootloaders clear MCUSR first; then this reads 0 and the cause shows as UNKNOWN.
+uint8_t g_resetFlags __attribute__((section(".noinit")));
+void captureResetFlags(void) __attribute__((naked, used, section(".init3")));
+void captureResetFlags(void) {
+  g_resetFlags = MCUSR;
+  MCUSR = 0;
+  wdt_disable();
+}
+
+const int EEPROM_BOOT_COUNT_ADDR = 0;   // uint32_t boot counter (survives power loss)
+unsigned long g_bootCount = 0;
 
 struct SlotChannel {
   const char* id;
@@ -77,6 +100,46 @@ int findSlotPin(String slotId) {
   return -1;
 }
 
+// Supply voltage in mV, by measuring the internal 1.1 V bandgap against AVcc.
+// Accuracy about +/-10% (bandgap tolerance): enough to see a sag or brownout.
+long readVccMv() {
+  ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);  // AVcc ref, bandgap input
+  ADCSRB &= ~_BV(MUX5);
+  delay(2);                                  // let the reference settle
+  uint16_t result = 0;
+  for (int i = 0; i < 2; i++) {              // first conversion after a mux change is discarded
+    ADCSRA |= _BV(ADSC);
+    while (bit_is_set(ADCSRA, ADSC)) {}
+    uint8_t low = ADCL;                      // ADCL must be read before ADCH
+    uint8_t high = ADCH;
+    result = ((uint16_t)high << 8) | low;
+  }
+  return result ? 1125300L / result : -1;    // 1.1 V * 1023 * 1000
+}
+
+String resetCause() {
+  if (g_resetFlags == 0) return "UNKNOWN";
+  String s = "";
+  if (g_resetFlags & _BV(PORF))  s += "POWER_ON+";
+  if (g_resetFlags & _BV(EXTRF)) s += "EXTERNAL+";   // reset pin: USB port open (DTR) or button
+  if (g_resetFlags & _BV(BORF))  s += "BROWNOUT+";   // supply dropped below the brown-out level
+  if (g_resetFlags & _BV(WDRF))  s += "WATCHDOG+";
+  if (s.length() == 0) return "OTHER";
+  return s.substring(0, s.length() - 1);
+}
+
+void printPins() {
+  Serial.print("INFO:PINS ");
+  for (int i = 0; i < TOTAL_SLOTS; i++) {
+    int level = digitalRead(SLOTS[i].relayPin);  // actual pin level, also for OUTPUT pins
+    Serial.print(SLOTS[i].id);
+    Serial.print(level == HIGH ? "=HIGH(" : "=LOW(");
+    Serial.print(level == RELAY_ACTIVE ? "ON)" : "OFF)");
+    if (i < TOTAL_SLOTS - 1) Serial.print(" ");
+  }
+  Serial.println();
+}
+
 void soundBuzzer(int pulses, int durationMs) {
   for (int i = 0; i < pulses; i++) {
     digitalWrite(PIN_BUZZER, HIGH);
@@ -112,9 +175,21 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_IR_DROP_SENSOR), isr_snackDropDetected, FALLING);
   }
 
+  // Count boots in EEPROM so resets are visible from the CLI even without LEDs
+  EEPROM.get(EEPROM_BOOT_COUNT_ADDR, g_bootCount);
+  if (g_bootCount == 0xFFFFFFFFUL) g_bootCount = 0;  // erased EEPROM
+  g_bootCount++;
+  EEPROM.put(EEPROM_BOOT_COUNT_ADDR, g_bootCount);
+
   // Power-on acoustic confirmation
   soundBuzzer(2, 70);
   Serial.println("SYSTEM:READY_CHANNELS_6");
+  Serial.print("INFO:BOOT count=");
+  Serial.print(g_bootCount);
+  Serial.print(" reset=");
+  Serial.print(resetCause());
+  Serial.print(" vcc_mv=");
+  Serial.println(readVccMv());
 }
 
 // ---------------------------------------------------------------------
@@ -209,6 +284,34 @@ void processIncomingCommand(String cmd) {
     Serial.print(";DROP_SENSOR=");
     if (!USE_IR_SENSOR) Serial.println("DISABLED");
     else Serial.println(digitalRead(PIN_IR_DROP_SENSOR) == LOW ? "BLOCKED" : "CLEAR");
+    return;
+  }
+
+  // 2b. CLI diagnostics
+  if (cmd == "PINS") {
+    printPins();
+    return;
+  }
+  if (cmd == "VCC") {
+    Serial.print("INFO:VCC_MV=");
+    Serial.println(readVccMv());
+    return;
+  }
+  if (cmd == "UPTIME") {
+    Serial.print("INFO:UPTIME_MS=");
+    Serial.println(millis());
+    return;
+  }
+  if (cmd == "DIAG") {
+    Serial.print("INFO:DIAG boots=");
+    Serial.print(g_bootCount);
+    Serial.print(" reset=");
+    Serial.print(resetCause());
+    Serial.print(" uptime_ms=");
+    Serial.print(millis());
+    Serial.print(" vcc_mv=");
+    Serial.println(readVccMv());
+    printPins();
     return;
   }
 

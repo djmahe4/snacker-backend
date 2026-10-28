@@ -472,6 +472,25 @@ journalctl -u snacker-vending -f
 
 `LOG_FILE=/path/vending.log` (same `systemctl edit`) also keeps a rotating copy (1 MB x 3). With the overlay file system enabled, point it at persistent storage or it only lives in RAM. Order IDs are shortened in logs (`abcd…xy`) because the ID is what the vending QR contains.
 
+**Ask the Mega directly (no LEDs needed).** Stop the daemon, then open the port with picocom (Enter must send CR+LF):
+
+```bash
+sudo systemctl stop snacker-vending
+picocom -b 115200 --omap crlf --echo --logfile ~/mega-test.log /dev/ttyUSB0   # exit: Ctrl-A Ctrl-X
+```
+
+| Command | Reply | Tells you |
+| :--- | :--- | :--- |
+| *(open the port)* | `SYSTEM:READY_CHANNELS_6` then `INFO:BOOT count=N reset=EXTERNAL vcc_mv=…` | Opening the port resets the Mega once (`EXTERNAL`). `count` is a boot counter kept in EEPROM |
+| `DIAG` | `INFO:DIAG boots=… reset=… uptime_ms=… vcc_mv=…` + `INFO:PINS …` | Everything below at once |
+| `PINS` | `INFO:PINS A1=HIGH(OFF) … B3=HIGH(OFF)` | The level each relay pin is really at. All `OFF` while motors spin means the problem is past the Mega (relay power, wiring) |
+| `VCC` | `INFO:VCC_MV=4950` | The Mega's own supply. Below about 4500 means sagging; watch it while a motor runs |
+| `UPTIME` | `INFO:UPTIME_MS=…` | Repeat after a while: if it went **down**, the Mega reset in between |
+| `PING` / `STATUS` / `STOP` | `PONG` / `INFO:SLOTS=…;DROP_SENSOR=DISABLED` / `ALL_MOTORS_STOPPED` | Firmware alive, right sketch, stop works |
+| `DISPENSE:A1:1` | `STATUS:DISPENSING:A1` … `DONE:A1:TIMED` | Run `PINS` right after sending: only `A1` should be `ON` |
+
+`reset=BROWNOUT`, a climbing `count`, or a low `vcc_mv` all point at power. `reset=UNKNOWN` means the bootloader cleared the reset flags; use `count` and `UPTIME` instead. The daemon sends `DIAG` at startup and logs these lines, with warnings for low voltage, brownouts and relay pins ON while idle.
+
 **4. Find the cause by symptom.**
 
 | Symptom | Likely cause | Check / fix |
