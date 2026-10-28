@@ -74,9 +74,12 @@ const unsigned long MIN_DROP_CLEAR_MS = 300;   // Debounce clearance after snack
 const bool USE_IR_SENSOR = false;
 const unsigned long TIMED_RUN_MS = 2500;       // Motor run per bag when USE_IR_SENSOR is false. TUNE to one full coil turn.
 
-// Relay Boards are typically Active-LOW (LOW = Energized, HIGH = Cut)
-const int RELAY_ACTIVE   = LOW;
-const int RELAY_INACTIVE = HIGH;
+// Motor driver: optocoupler + MOSFET per channel. The Mega pin feeds the optocoupler LED, so
+// HIGH = motor ON, LOW = motor OFF (active-HIGH). With these the wrong way round, setup()'s
+// "all off" switched every motor on. A floating pin (reset/upload) cannot light the LED, so
+// motors stay off while the Mega boots.
+const int RELAY_ACTIVE   = HIGH;
+const int RELAY_INACTIVE = LOW;
 
 // Volatile flag toggled by hardware interrupt when snack breaks IR beam
 volatile bool g_snackDropped = false;

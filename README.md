@@ -116,12 +116,12 @@ To prevent any confusion between payment and dispensing, SNACKER uses two comple
 
 | Channel | Snack Item (Default) | Arduino Mega Pin | Protection / Interface |
 | :---: | :---: | :---: | :---: |
-| **A1** | Classic Salted Lays | **Digital Pin 22** | Relay IN1 (Active LOW) |
-| **A2** | Doritos Nacho Cheese | **Digital Pin 24** | Relay IN2 (Active LOW) |
-| **A3** | Oreo Vanilla Cookies | **Digital Pin 26** | Relay IN3 (Active LOW) |
-| **B1** | Snickers Chocolate Bar | **Digital Pin 28** | Relay IN4 (Active LOW) |
-| **B2** | Coca-Cola Can 300ml | **Digital Pin 30** | Relay IN5 (Active LOW) |
-| **B3** | KitKat 4-Finger Wafer | **Digital Pin 32** | Relay IN6 (Active LOW) |
+| **A1** | Classic Salted Lays | **Digital Pin 22** | Driver CH1 (opto + MOSFET, active HIGH) |
+| **A2** | Doritos Nacho Cheese | **Digital Pin 24** | Driver CH2 (opto + MOSFET, active HIGH) |
+| **A3** | Oreo Vanilla Cookies | **Digital Pin 26** | Driver CH3 (opto + MOSFET, active HIGH) |
+| **B1** | Snickers Chocolate Bar | **Digital Pin 28** | Driver CH4 (opto + MOSFET, active HIGH) |
+| **B2** | Coca-Cola Can 300ml | **Digital Pin 30** | Driver CH5 (opto + MOSFET, active HIGH) |
+| **B3** | KitKat 4-Finger Wafer | **Digital Pin 32** | Driver CH6 (opto + MOSFET, active HIGH) |
 | **IR Sensor** | Drop Detection Beam | **Digital Pin 2** | Hardware Interrupt `INT.0` |
 | **Green LED** | Dispense Active / Success | **Digital Pin 12** | 220Ω Resistor |
 | **Red LED** | Fault / Jamming Indicator | **Digital Pin 11** | 220Ω Resistor |

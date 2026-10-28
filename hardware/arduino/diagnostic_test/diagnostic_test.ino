@@ -31,9 +31,9 @@ MotorChannel motors[] = {
 
 const uint8_t MOTOR_COUNT = sizeof(motors) / sizeof(motors[0]);
 
-// Opto-isolated relay boards are Active LOW (LOW = Energized, HIGH = Cut)
-const uint8_t MOTOR_ON  = LOW;
-const uint8_t MOTOR_OFF = HIGH;
+// Optocoupler + MOSFET driver: Mega pin HIGH lights the opto LED, so HIGH = motor ON (active-HIGH)
+const uint8_t MOTOR_ON  = HIGH;
+const uint8_t MOTOR_OFF = LOW;
 
 // Short test pulse duration (ms)
 const unsigned long TEST_TIME_MS = 1000;
