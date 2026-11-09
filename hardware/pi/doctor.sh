@@ -384,6 +384,14 @@ section_upi() {
         bad "no payment observer connected: every payment will end 'Not Confirmed'"
         hint "sign in the Gmail email observer, or pair the Android observer app (README: 'How payments get confirmed')"
     fi
+    # Confirming a payment and STARTING one are gated differently: youpi-pg refuses new UPI
+    # sessions (503 "UPI observers are offline") unless an Android heartbeat is fresh or this
+    # opt-in lets a live Gmail poller stand in for it.
+    if [ "$gmail" = true ] && [ "$devices" -eq 0 ] && [ "$sms" != true ] \
+        && [ "$(env_get "$YOUPI_DIR/.env" YOUPI_ALLOW_GMAIL_ONLY || true)" != true ]; then
+        bad "only the Gmail observer is up: youpi-pg will REFUSE new recharges (503 'UPI observers are offline')"
+        hint "add YOUPI_ALLOW_GMAIL_ONLY=true to $YOUPI_DIR/.env and restart youpi-pg (needs the YouPI-PG fork: ./setup_pi.sh youpi), or pair the Android app"
+    fi
 
     # WhatsApp sender for customer login OTPs (lost after an OS reinstall / SD corruption)
     local wa

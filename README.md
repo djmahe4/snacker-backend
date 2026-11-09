@@ -378,6 +378,14 @@ cd YouPI-PG/apps/android-observer-app
 
 Discovery needs public read on that one document; `firebase/firestore.rules` allows it (it holds only the tunnel URL and status). Deploy the rules after pulling. The upstream prebuilt APK works too, but keeps the URL entered at pairing and must be re-paired after every tunnel restart.
 
+**Email-only (no phone app).** Confirming a payment and *starting* one are gated differently. youpi-pg refuses a new UPI session 
+(`503 UPI observers are offline`, shown in the app as "Recharge Failed") unless an Android observer heartbeat is under 5 minutes old; 
+a healthy Gmail observer alone does not count. If you rely on the Gmail observer only, use the YouPI-PG fork (`./setup_pi.sh youpi`) and add 
+`YOUPI_ALLOW_GMAIL_ONLY=true` to `~/youpi-pg/.env`, then `sudo systemctl restart youpi-pg`. The Gmail poller must be genuinely running 
+(`curl -s localhost:6003/health` shows `isRunning: true`, `lifecycleState: ACTIVE`); a stored token with a stopped poller does not open the gate. 
+The setting is off by default because email alerts can arrive later than SMS, so lengthen `PAYMENT_PROCESSING_WINDOW_MS` too. 
+`./doctor.sh upi` flags this exact situation.
+
 **Pairing.** `./setup_pi.sh observer` prints all of the below for your Pi: the APK build command with your Firebase project ID, the live tunnel URL and a fresh enrollment token.
 1. Install the APK, grant **Notification Listener** access, set battery to **Unrestricted**.
 2. On the Pi, get the enrollment token. It is a **permanent shared secret** (the 10-minute expiry only applies to the admin QR, which you are not using): anyone holding it and the gateway URL can register an observer that forges bank credit alerts. Never paste it into chat or tickets, and rotate it after pairing (step 5).
