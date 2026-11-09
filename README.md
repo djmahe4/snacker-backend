@@ -347,6 +347,15 @@ A Quick Tunnel gets a new `*.trycloudflare.com` URL every restart, which breaks 
 4. Set `PUBLIC_URL=https://pay.<your-domain>` in `hardware/pi/pi.conf`, then run `./doctor.sh`: it checks the connector is active and that `PUBLIC_URL/youpi.js` returns 200 through Cloudflare.
 5. Vercel: `YOUPI_GATEWAY_URL` and `NEXT_PUBLIC_YOUPI_GATEWAY_URL` = `https://pay.<your-domain>` (not `auto`: the URL no longer changes), then redeploy. The Android observer needs no discovery build: the stock APK works with a fixed HTTPS URL, and nothing needs re-pairing.
 
+> **Keeping the merchant ID stable.** YouPI-PG seeds its default merchant with the fixed ID 
+> `00000000-0000-0000-0000-000000000001`, so a reinstall or a wiped `data/` recreates the same one. It is pinned as `MERCHANT_ID` in 
+> `pi.conf`, and three things depend on it: Vercel (`YOUPI_MERCHANT_ID` and `NEXT_PUBLIC_YOUPI_MERCHANT_ID`), the Android observer app 
+> (it pairs with this ID), and the Gmail observer's `RECEIVING_ACCOUNT_ID` (the UPI account record, `...0002` on a fresh seed). 
+> The only way the ID changes is if the database already holds another merchant, for example an old `data/` copied over a fresh install. 
+> `./doctor.sh upi` and `./setup_pi.sh merchant` fail with instructions if the database disagrees with the pin, and `doctor.sh` also 
+> checks that `RECEIVING_ACCOUNT_ID` is the active UPI account. Back up `~/youpi-pg/data/` (database + `.secrets/`) so a restore keeps the 
+> ID, the UPI settings, the webhook target, paired phones and the Gmail sign-in together.
+
 `./setup_pi.sh --all` runs everything in that order (using `cloudflared` instead of `tunnel` when `CLOUDFLARE_TUNNEL_TOKEN` is set). Re-running a step is safe: existing `.env` files are never overwritten, and secrets are never printed (only an 8-character SHA-256 fingerprint).
 
 #### How payments get confirmed (required: a payment observer)
