@@ -417,6 +417,12 @@ step_merchant() {
     body=$(jq -n --arg u "$url" --arg s "$secret" '{webhookUrl: $u, webhookSecret: $s}')
     youpi_admin POST /api/v1/admin/merchant-settings "$body" | jq '{merchantId, webhookUrl, error}'
     mid=$(youpi_admin GET /api/v1/admin/merchant-settings | jq -r .merchantId)
+    if [ "$mid" != "${MERCHANT_ID:-$mid}" ]; then
+        echo "  ❌ merchant ID is $mid but pi.conf pins MERCHANT_ID=$MERCHANT_ID."
+        echo "     youpi-pg's database holds a different merchant. Restore the original data/, or set"
+        echo "     MERCHANT_ID=$mid in pi.conf and update Vercel and the phone app to match."
+        return 1
+    fi
     echo "  ℹ️  In Vercel set YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID to: $mid"
     echo "     (any other value makes /api/v1/payments answer 400 'Merchant not found or not configured')"
 }

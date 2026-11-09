@@ -37,3 +37,9 @@ PUBLIC_URL=
 
 # YouPI-PG source. Default: our fork (upstream + FamPay email alerts + observer discovery).
 # YOUPI_REPO=https://github.com/djmahe4/YouPI-PG.git
+
+# The merchant ID this deployment is pinned to. YouPI-PG seeds its default merchant with this
+# fixed ID, so a reinstall recreates the same one. Vercel (YOUPI_MERCHANT_ID and
+# NEXT_PUBLIC_YOUPI_MERCHANT_ID) and the Android observer app use it too. doctor.sh and
+# './setup_pi.sh merchant' fail loudly if youpi-pg's database holds a different one.
+MERCHANT_ID=00000000-0000-0000-0000-000000000001

@@ -348,8 +348,23 @@ section_upi() {
         bad "merchant webhook secret differs from backend YOUPI_WEBHOOK_SECRET: backend will reject payment webhooks"
         hint "./setup_pi.sh merchant"
     fi
-    ok "merchant ID: $mid"
-    hint "Vercel YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID must equal this (else 400 'Merchant not found')"
+    local pinned="${MERCHANT_ID:-00000000-0000-0000-0000-000000000001}"
+    if [ "$mid" = "$pinned" ]; then
+        ok "merchant ID: $mid (matches the pinned MERCHANT_ID)"
+        hint "Vercel YOUPI_MERCHANT_ID and NEXT_PUBLIC_YOUPI_MERCHANT_ID must equal this (else 400 'Merchant not found')"
+    else
+        bad "merchant ID is $mid but this deployment is pinned to $pinned"
+        hint "youpi-pg's database holds another merchant (an old data/ restored over a fresh seed?). Either restore the original data/, or set MERCHANT_ID=$mid in pi.conf AND update Vercel and re-pair the phone app"
+    fi
+    # The Gmail observer attributes emails to RECEIVING_ACCOUNT_ID; if the UPI account record
+    # is recreated with a new ID it silently drops every email (MISSING/stale account)
+    local active_id env_rid
+    active_id=$(printf '%s' "$json" | jq -r '[.accounts[] | select(.isActive)][0].id // empty')
+    env_rid=$(env_get "$YOUPI_DIR/.env" RECEIVING_ACCOUNT_ID || true)
+    if [ -n "$active_id" ] && [ -n "$env_rid" ] && [ "$active_id" != "$env_rid" ]; then
+        bad "RECEIVING_ACCOUNT_ID ($env_rid) is not the active UPI account ($active_id): the Gmail observer will drop every email"
+        hint "./setup_pi.sh upi   (rewrites RECEIVING_ACCOUNT_ID)"
+    fi
 
     # youpi has no bank link: a payment is only confirmed when an observer reports the bank's
     # credit alert. With none connected, every payment ends "Not Confirmed".
