@@ -578,6 +578,14 @@ Nginx routes all traffic on Port 80, cleanly multiplexing the frontend, the paym
 > [!NOTE]
 > The `/*` to port `3000` route only applies if you host the Next.js frontend on the Pi. When the frontend is on Vercel (the reference setup), that route is unused.
 
+> [!IMPORTANT]
+> The Quick Tunnel/public site (`hardware/pi/nginx/snacker-quick.conf`) deliberately returns `404` for `/api/v1/admin/*`, 
+> the `simulate-observation` developer route and `/youpi-admin/`. Those control the gateway (UPI ID, webhook target, 
+> simulated bank credits) and are protected only by `ADMIN_API_TOKEN`, so they are reachable only on the Pi itself: 
+> `setup_pi.sh` and `doctor.sh` call `127.0.0.1:6100` directly, and the admin panel is available over SSH 
+> (`ssh -L 6001:localhost:6001 <user>@<pi>`, then open `http://localhost:6001`). 
+> `./doctor.sh http` warns if the admin API answers on `PUBLIC_URL`.
+
 Apply the Nginx configuration:
 ```bash
 sudo cp hardware/pi/nginx/snacker.conf /etc/nginx/sites-available/snacker
